@@ -110,6 +110,9 @@ model User {
   /// Relation to user's spending limits
   spendingLimits SpendingLimit[]
 
+  /// Relation to user's sessions
+  sessions Session[]
+
   @@index([authId])
   @@index([authProvider])
   @@index([deletedAt])
@@ -701,6 +704,43 @@ model KeyRotationAuditLog {
   @@index([success])
   @@index([operation, timestamp])
   @@index([keyId, operation])
+  @@index([expiresAt])
+}
+
+/// Session status lifecycle
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+/// User session management for tracking active sessions
+model Session {
+  id String @id @default(uuid())
+
+  /// User reference
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Session token identifier
+  sessionToken String @unique
+
+  /// Session status
+  status SessionStatus @default(ACTIVE)
+
+  /// Expiration timestamp
+  expiresAt DateTime
+
+  /// Revocation details
+  revokedAt DateTime?
+  revokeReason String?
+
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([sessionToken])
   @@index([expiresAt])
 }
 
