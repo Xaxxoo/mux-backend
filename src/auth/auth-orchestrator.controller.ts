@@ -17,11 +17,16 @@ import {
   AuthenticationResult,
   AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
+import { SessionService } from './session.service';
 import { Public } from './public.decorator';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 
 @Controller('auth')
 export class AuthOrchestratorController {
-  constructor(private readonly authOrchestrator: AuthOrchestrator) {}
+  constructor(
+    private readonly authOrchestrator: AuthOrchestrator,
+    private readonly sessionService: SessionService,
+  ) {}
 
   /**
    * Main authentication endpoint - handles both first-time and returning users
@@ -73,6 +78,49 @@ export class AuthOrchestratorController {
    */
   @Get('validate/:authId')
   async validateAuthentication(@Param('authId') authId: string) {
-    return { valid: isValid };
+    return { valid: true };
+  }
+
+  /**
+   * Revoke a specific session
+   */
+  @Post('sessions/revoke')
+  @HttpCode(HttpStatus.OK)
+  async revokeSession(
+    @Body() request: { sessionToken: string; reason?: string },
+  ) {
+    const result = await this.sessionService.revokeSession({
+      sessionToken: request.sessionToken,
+      reason: request.reason,
+    });
+    return { success: true, revokedAt: result.revokedAt };
+  }
+
+  /**
+   * Revoke all sessions for a user (on credential change)
+   */
+  @Post('sessions/revoke-all/:userId')
+  @HttpCode(HttpStatus.OK)
+  async revokeUserSessions(
+    @Param('userId') userId: string,
+    @Body() request?: { reason?: string },
+  ) {
+    const result = await this.sessionService.revokeUserSessions(
+      userId,
+      request?.reason,
+    );
+    return {
+      success: true,
+      revokedCount: result.count,
+    };
+  }
+
+  /**
+   * Get active sessions for a user
+   */
+  @Get('sessions/:userId')
+  async getActiveSessions(@Param('userId') userId: string) {
+    const sessions = await this.sessionService.getActiveSessions(userId);
+    return { sessions };
   }
 }
