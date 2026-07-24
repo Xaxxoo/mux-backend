@@ -17,7 +17,7 @@ import {
   AuthenticationResult,
   AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
-import { RefreshTokenService } from './refresh-token.service';
+import { SessionService } from './session.service';
 import { Public } from './public.decorator';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 
@@ -25,7 +25,7 @@ import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 export class AuthOrchestratorController {
   constructor(
     private readonly authOrchestrator: AuthOrchestrator,
-    private readonly refreshTokenService: RefreshTokenService,
+    private readonly sessionService: SessionService,
   ) {}
 
   /**
@@ -82,91 +82,30 @@ export class AuthOrchestratorController {
   }
 
   /**
-   * Rotate a refresh token on use
+   * Revoke a specific session
    */
-  @Post('refresh-tokens/rotate')
+  @Post('sessions/revoke')
   @HttpCode(HttpStatus.OK)
-  async rotateRefreshToken(
-    @Body()
-    request: {
-      currentTokenHash: string;
-      newTokenHash: string;
-      expiresAt: string;
-    },
+  async revokeSession(
+    @Body() request: { sessionToken: string; reason?: string },
   ) {
-    const result = await this.refreshTokenService.rotateRefreshToken({
-      currentTokenHash: request.currentTokenHash,
-      newTokenHash: request.newTokenHash,
-      expiresAt: new Date(request.expiresAt),
-    });
-    return {
-      success: true,
-      token: {
-        id: result.id,
-        userId: result.userId,
-        expiresAt: result.expiresAt,
-      },
-    };
-  }
-
-  /**
-   * Validate and rotate a refresh token (combined operation)
-   */
-  @Post('refresh-tokens/validate-and-rotate')
-  @HttpCode(HttpStatus.OK)
-  async validateAndRotateToken(
-    @Body()
-    request: {
-      currentTokenHash: string;
-      newTokenHash: string;
-      expiresAt: string;
-    },
-  ) {
-    const result = await this.refreshTokenService.validateAndRotateToken(
-      request.currentTokenHash,
-      request.newTokenHash,
-      new Date(request.expiresAt),
-    );
-
-    if (!result) {
-      return { success: false, error: 'Invalid or expired token' };
-    }
-
-    return {
-      success: true,
-      token: {
-        id: result.id,
-        userId: result.userId,
-        expiresAt: result.expiresAt,
-      },
-    };
-  }
-
-  /**
-   * Revoke a refresh token
-   */
-  @Post('refresh-tokens/revoke')
-  @HttpCode(HttpStatus.OK)
-  async revokeRefreshToken(
-    @Body() request: { tokenHash: string; reason?: string },
-  ) {
-    const result = await this.refreshTokenService.revokeRefreshToken({
-      tokenHash: request.tokenHash,
+    const result = await this.sessionService.revokeSession({
+      sessionToken: request.sessionToken,
       reason: request.reason,
     });
     return { success: true, revokedAt: result.revokedAt };
   }
 
   /**
-   * Revoke all refresh tokens for a user
+   * Revoke all sessions for a user (on credential change)
    */
-  @Post('refresh-tokens/revoke-all/:userId')
+  @Post('sessions/revoke-all/:userId')
   @HttpCode(HttpStatus.OK)
-  async revokeUserRefreshTokens(
+  async revokeUserSessions(
     @Param('userId') userId: string,
     @Body() request?: { reason?: string },
   ) {
-    const result = await this.refreshTokenService.revokeUserRefreshTokens(
+    const result = await this.sessionService.revokeUserSessions(
       userId,
       request?.reason,
     );
@@ -177,20 +116,11 @@ export class AuthOrchestratorController {
   }
 
   /**
-   * Get active refresh tokens for a user
+   * Get active sessions for a user
    */
-  @Get('refresh-tokens/:userId')
-  async getActiveRefreshTokens(@Param('userId') userId: string) {
-    const tokens = await this.refreshTokenService.getActiveRefreshTokens(
-      userId,
-    );
-    return {
-      tokens: tokens.map((t) => ({
-        id: t.id,
-        expiresAt: t.expiresAt,
-        lastUsedAt: t.lastUsedAt,
-        usageCount: t.usageCount,
-      })),
-    };
+  @Get('sessions/:userId')
+  async getActiveSessions(@Param('userId') userId: string) {
+    const sessions = await this.sessionService.getActiveSessions(userId);
+    return { sessions };
   }
 }
