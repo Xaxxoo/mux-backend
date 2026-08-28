@@ -22,6 +22,8 @@ export interface ValidatedEnv {
   PORT: number;
   JSON_BODY_LIMIT_BYTES: number;
   MAINTENANCE_ADMIN_SECRET: string;
+  METRICS_SCRAPE_TOKEN: string;
+  HORIZON_IMPORT_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
   BALANCE_STALE_THRESHOLD_MS: number;
@@ -209,6 +211,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   );
   const MAINTENANCE_ADMIN_SECRET =
     env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const METRICS_SCRAPE_TOKEN = env.METRICS_SCRAPE_TOKEN?.trim() ?? '';
+  const HORIZON_IMPORT_SECRET = env.HORIZON_IMPORT_SECRET?.trim() ?? '';
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
@@ -420,6 +424,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     PORT,
     JSON_BODY_LIMIT_BYTES,
     MAINTENANCE_ADMIN_SECRET,
+    METRICS_SCRAPE_TOKEN,
+    HORIZON_IMPORT_SECRET,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
     BALANCE_STALE_THRESHOLD_MS,
