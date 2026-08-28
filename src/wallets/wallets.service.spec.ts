@@ -379,42 +379,61 @@ describe('WalletsService', () => {
         encryptedSecret: 'old-encrypted-secret',
         secretVersion: 1,
         keyVersion: 1,
+        network: WalletNetwork.TESTNET,
       };
 
-      const updatedWallet = {
-        id: 'wallet-123',
+      const successorWallet = {
+        id: 'wallet-456',
         userId: 'user-123',
         publicKey: 'new-public-key',
         encryptedSecret: 'new-encrypted-secret',
         secretVersion: 2,
-        keyVersion: 2,
+        keyVersion: 1,
         network: WalletNetwork.TESTNET,
         status: 'ACTIVE',
         encryptionVersion: 1,
         statusReason: null,
         statusChangedAt: new Date(),
-        rotatedFromId: null,
+        rotatedFromId: 'wallet-123',
+        successorId: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
-      mockPrismaWallet.update.mockResolvedValue(updatedWallet);
+      mockPrismaWallet.create.mockResolvedValue(successorWallet);
+      mockPrismaWallet.update.mockResolvedValue({
+        ...existingWallet,
+        successorId: 'wallet-456',
+        status: 'ROTATING',
+      });
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockReturnValue('new-private-key');
 
       const result = await service.rotateWalletKey('wallet-123');
 
-      expect(result.wallet.id).toBe('wallet-123');
+      expect(result.wallet.id).toBe('wallet-456');
+      expect(result.wallet.rotatedFromId).toBe('wallet-123');
       expect(result.wallet.secretVersion).toBe(2);
       expect(result.privateKey).toBe('new-private-key');
+      expect(mockPrismaWallet.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ rotatedFromId: 'wallet-123' }),
+        }),
+      );
+      expect(mockPrismaWallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'wallet-123' },
+          data: expect.objectContaining({ successorId: 'wallet-456' }),
+        }),
+      );
       expect(keyManagementService.generateKey).toHaveBeenCalledWith({
         keyType: KeyType.STELLAR_ED25519,
         metadata: { walletId: 'wallet-123', operation: 'rotation' },
       });
       expect(webhookEventEmitter.emitWalletRotated).toHaveBeenCalledWith({
-        walletId: 'wallet-123',
+        walletId: 'wallet-456',
         userId: 'user-123',
         publicKey: 'new-public-key',
         network: WalletNetwork.TESTNET,

@@ -315,17 +315,32 @@ export class WalletsService implements OnModuleDestroy {
         keyType: KeyType.STELLAR_ED25519,
         metadata: { walletId, operation: 'rotation' },
       });
-      const updated = await this.prisma.wallet.update({
-        where: { id: walletId },
-        data: {
-          publicKey: key.publicKey,
-          encryptedSecret: key.encryptedData,
-          secretVersion: existing.secretVersion + 1,
-          encryptionVersion: key.encryptionVersion,
-          updatedAt: new Date(),
-        },
+      const successor = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.wallet.create({
+          data: {
+            userId: existing.userId,
+            publicKey: key.publicKey,
+            encryptedSecret: key.encryptedData,
+            secretVersion: existing.secretVersion + 1,
+            encryptionVersion: key.encryptionVersion,
+            keyVersion: existing.keyVersion,
+            network: existing.network,
+            status: 'ACTIVE',
+            rotatedFromId: walletId,
+          },
+        });
+        await tx.wallet.update({
+          where: { id: walletId },
+          data: {
+            successorId: created.id,
+            status: 'ROTATING',
+            statusReason: 'Key rotation initiated',
+            statusChangedAt: new Date(),
+          },
+        });
+        return created;
       });
-      const wallet = this.mapPrismaWalletToDomain(updated);
+      const wallet = this.mapPrismaWalletToDomain(successor);
       const privateKey = this.encryptionService.deserializeAndDecrypt(
         key.encryptedData,
       );

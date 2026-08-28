@@ -94,6 +94,10 @@ describe('Wallets KeyGen Integration', () => {
 
     // Setup common mocks
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation(
+      async (cb: (tx: any) => Promise<any>) =>
+        cb({ wallet: mockPrisma.wallet }),
+    );
   });
 
   describe('WalletsService - KeyManagementService Integration', () => {
@@ -151,8 +155,8 @@ describe('Wallets KeyGen Integration', () => {
         updatedAt: new Date(),
       });
 
-      mockPrisma.wallet.update.mockResolvedValue({
-        id: 'wallet-123',
+      mockPrisma.wallet.create.mockResolvedValue({
+        id: 'wallet-456',
         userId: 'user-123',
         publicKey: 'new-public-key',
         encryptedSecret: 'new-encrypted-secret',
@@ -162,7 +166,24 @@ describe('Wallets KeyGen Integration', () => {
         encryptionVersion: 1,
         statusReason: null,
         statusChangedAt: new Date(),
+        rotatedFromId: 'wallet-123',
+        successorId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      mockPrisma.wallet.update.mockResolvedValue({
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'old-public-key',
+        encryptedSecret: 'old-encrypted-secret',
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'ROTATING',
+        encryptionVersion: 1,
+        statusReason: 'Key rotation initiated',
+        statusChangedAt: new Date(),
         rotatedFromId: null,
+        successorId: 'wallet-456',
         createdAt: new Date(),
         updatedAt: new Date(),
       });
