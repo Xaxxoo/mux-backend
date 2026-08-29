@@ -91,3 +91,82 @@ describe('KeyValidationCacheService', () => {
     });
   });
 });
+
+describe('KeyValidationCacheService — production/dev mode split (#689)', () => {
+  describe('resolveMode', () => {
+    it('defaults to "memory" outside production when unset', () => {
+      expect(
+        KeyValidationCacheService.resolveMode({ NODE_ENV: 'development' }),
+      ).toBe('memory');
+      expect(KeyValidationCacheService.resolveMode({ NODE_ENV: 'test' })).toBe(
+        'memory',
+      );
+    });
+
+    it('fails fast in production when unset (no silent in-process stub)', () => {
+      expect(() =>
+        KeyValidationCacheService.resolveMode({ NODE_ENV: 'production' }),
+      ).toThrow(/must be set explicitly in production/);
+    });
+
+    it('honours an explicit mode in production', () => {
+      expect(
+        KeyValidationCacheService.resolveMode({
+          NODE_ENV: 'production',
+          KEY_VALIDATION_CACHE_MODE: 'disabled',
+        }),
+      ).toBe('disabled');
+      expect(
+        KeyValidationCacheService.resolveMode({
+          NODE_ENV: 'production',
+          KEY_VALIDATION_CACHE_MODE: 'MEMORY',
+        }),
+      ).toBe('memory');
+    });
+
+    it('rejects an unknown mode value', () => {
+      expect(() =>
+        KeyValidationCacheService.resolveMode({
+          KEY_VALIDATION_CACHE_MODE: 'redis',
+        }),
+      ).toThrow(/must be one of: memory, disabled/);
+    });
+  });
+
+  describe('disabled mode (fail-closed)', () => {
+    let cache: KeyValidationCacheService;
+
+    beforeEach(() => {
+      cache = new KeyValidationCacheService({
+        KEY_VALIDATION_CACHE_MODE: 'disabled',
+      });
+    });
+
+    it('reports itself as disabled', () => {
+      expect(cache.getMode()).toBe('disabled');
+      expect(cache.isEnabled()).toBe(false);
+    });
+
+    it('never returns a cached result — every validation is recomputed', () => {
+      cache.set('GPUB', 'enc', true, 60_000);
+      expect(cache.get('GPUB', 'enc')).toBeUndefined();
+      expect(cache.size()).toBe(0);
+    });
+
+    it('makes invalidate a safe no-op', () => {
+      expect(() => cache.invalidate('GPUB')).not.toThrow();
+    });
+  });
+
+  describe('memory mode', () => {
+    it('behaves as an in-process cache', () => {
+      const cache = new KeyValidationCacheService({
+        KEY_VALIDATION_CACHE_MODE: 'memory',
+      });
+      expect(cache.getMode()).toBe('memory');
+      expect(cache.isEnabled()).toBe(true);
+      cache.set('GPUB', 'enc', true, 60_000);
+      expect(cache.get('GPUB', 'enc')).toBe(true);
+    });
+  });
+});

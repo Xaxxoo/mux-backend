@@ -22,9 +22,10 @@ export interface ValidatedEnv {
   PORT: number;
   JSON_BODY_LIMIT_BYTES: number;
   MAINTENANCE_ADMIN_SECRET: string;
+  CRON_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
-  STELLAR_NETWORK: string;
+  STELLAR_HORIZON_MAX_RETRIES: number;
   BALANCE_STALE_THRESHOLD_MS: number;
   BALANCE_SYNC_INTERVAL_MS: number;
   BALANCE_SYNC_MAX_RETRIES: number;
@@ -33,6 +34,8 @@ export interface ValidatedEnv {
   WEBHOOK_RETRY_BACKOFF_MS: number;
   WEBHOOK_TIMEOUT_MS: number;
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: number;
+  WEBHOOK_QUEUE_INTERVAL_MS: number;
+  WEBHOOK_INBOUND_SECRET: string;
   AUTH_RATE_LIMIT_MAX: number;
   AUTH_RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_WINDOW_MS: number;
@@ -261,36 +264,18 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     'STELLAR_HORIZON_URL',
     violations,
   );
-  const STELLAR_NETWORK = requireEnum(
+  const MAINTENANCE_ADMIN_SECRET =
+    env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_SECRET =
+    process.env.NODE_ENV === 'production'
+      ? requireMinLength(env, 'RECOVERY_ADMIN_SECRET', 32, violations)
+      : env.RECOVERY_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_DEV_BYPASS = optionalBoolean(
     env,
-    'STELLAR_NETWORK',
-    ['TESTNET', 'MAINNET'],
+    'RECOVERY_ADMIN_DEV_BYPASS',
+    false,
     violations,
   );
-
-  // Cross-check that the Horizon URL matches the configured network so a
-  // mismatched pairing (e.g. STELLAR_NETWORK=MAINNET pointed at the testnet
-  // Horizon instance) is caught at boot instead of surfacing as confusing
-  // balance/transaction data later.
-  if (STELLAR_NETWORK && STELLAR_HORIZON_URL) {
-    const urlLower = STELLAR_HORIZON_URL.toLowerCase();
-    if (STELLAR_NETWORK === 'MAINNET' && urlLower.includes('testnet')) {
-      violations.push({
-        variable: 'STELLAR_HORIZON_URL',
-        message:
-          'STELLAR_HORIZON_URL appears to point to testnet but STELLAR_NETWORK=MAINNET',
-      });
-    }
-    if (STELLAR_NETWORK === 'TESTNET' && urlLower.includes('mainnet')) {
-      violations.push({
-        variable: 'STELLAR_HORIZON_URL',
-        message:
-          'STELLAR_HORIZON_URL appears to point to mainnet but STELLAR_NETWORK=TESTNET',
-      });
-    }
-  }
-
-  const MAINTENANCE_ADMIN_SECRET = env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(
@@ -305,6 +290,13 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     'JSON_BODY_LIMIT_BYTES',
     102_400,
     { min: 1, max: 10_485_760 },
+    violations,
+  );
+  const STELLAR_HORIZON_MAX_RETRIES = optionalInt(
+    env,
+    'STELLAR_HORIZON_MAX_RETRIES',
+    3,
+    { min: 0, max: 100 },
     violations,
   );
   const BALANCE_STALE_THRESHOLD_MS = optionalInt(
@@ -362,6 +354,15 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 1 },
     violations,
   );
+  const WEBHOOK_QUEUE_INTERVAL_MS = optionalInt(
+    env,
+    'WEBHOOK_QUEUE_INTERVAL_MS',
+    30_000,
+    { min: 100 },
+    violations,
+  );
+  const WEBHOOK_INBOUND_SECRET =
+    env.WEBHOOK_INBOUND_SECRET?.trim() ?? '';
   const AUTH_RATE_LIMIT_MAX = optionalInt(
     env,
     'AUTH_RATE_LIMIT_MAX',
@@ -439,6 +440,13 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
 
   // In production, fail closed if identity provider not configured
   if (process.env.NODE_ENV === 'production') {
+    if (!MAINTENANCE_ADMIN_SECRET) {
+      violations.push({
+        variable: 'MAINTENANCE_ADMIN_SECRET',
+        message: 'MAINTENANCE_ADMIN_SECRET is required in production (remote maintenance-mode toggling must not be silently disabled)',
+      });
+    }
+
     if (!AUTH_IDENTITY_PROVIDER) {
       violations.push({
         variable: 'AUTH_IDENTITY_PROVIDER',
@@ -460,6 +468,26 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
         variable: 'BETTER_AUTH_JWKS_URL',
         message:
           'BETTER_AUTH_JWKS_URL is required when AUTH_IDENTITY_PROVIDER=BETTER_AUTH',
+      });
+    }
+  }
+
+  // ── Cron / internal endpoints ─────────────────────────────────────────────
+  const CRON_SECRET = env.CRON_SECRET?.trim() ?? '';
+
+  // In production, fail closed: internal cron endpoints rely on CRON_SECRET
+  // (X-Cron-Secret header guard), so the server must not start without it.
+  if (process.env.NODE_ENV === 'production') {
+    if (!CRON_SECRET) {
+      violations.push({
+        variable: 'CRON_SECRET',
+        message: 'CRON_SECRET is required in production',
+      });
+    } else if (CRON_SECRET.length < 16) {
+      violations.push({
+        variable: 'CRON_SECRET',
+        message:
+          'CRON_SECRET must be at least 16 characters long in production',
       });
     }
   }
@@ -533,9 +561,10 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     PORT,
     JSON_BODY_LIMIT_BYTES,
     MAINTENANCE_ADMIN_SECRET,
+    CRON_SECRET,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
-    STELLAR_NETWORK,
+    STELLAR_HORIZON_MAX_RETRIES,
     BALANCE_STALE_THRESHOLD_MS,
     BALANCE_SYNC_INTERVAL_MS,
     BALANCE_SYNC_MAX_RETRIES,
@@ -544,6 +573,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     WEBHOOK_RETRY_BACKOFF_MS,
     WEBHOOK_TIMEOUT_MS,
     WEBHOOK_MAX_CONSECUTIVE_FAILURES,
+    WEBHOOK_QUEUE_INTERVAL_MS,
+    WEBHOOK_INBOUND_SECRET,
     AUTH_RATE_LIMIT_MAX,
     AUTH_RATE_LIMIT_WINDOW_MS,
     RATE_LIMIT_WINDOW_MS,

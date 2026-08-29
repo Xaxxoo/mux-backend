@@ -58,6 +58,16 @@ function parsePaginationParam(
   return n;
 }
 
+/**
+ * Public wallet API (`/v1/wallets`).
+ *
+ * NOTE (issue #691): wallet key rotation is deliberately NOT exposed here.
+ * `WalletsService.rotateWalletKey` is an internal custody operation, driven
+ * through the internal key-management route
+ * (`POST /v1/internal/key-management/rotate`, guarded by `InternalServiceGuard`).
+ * Rotation creates a successor wallet rather than mutating an existing one
+ * (see #692), so it is not a self-service action for API-key holders.
+ */
 @ApiTags('wallets')
 @ApiSecurity('api-key')
 @Controller('wallets')

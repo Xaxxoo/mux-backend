@@ -87,7 +87,8 @@ delay is returned in the `Retry-After` header.
 
 Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
 send `PATCH /v1/maintenance` with normal API-key authentication plus the
-`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`:
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
+is required in production — startup fails fast if it is unset.
 
 ```json
 {
@@ -268,6 +269,13 @@ Users cannot be "deleted" through normal API flows; instead, their status is cha
 * Keys encrypted and stored securely server-side
 
 ### 🔁 Transaction Orchestration
+
+Payment creation validates the UUID wallet identities, creates the modern
+transaction record, signs with the sender wallet custody key, and submits the
+envelope to Horizon. Legacy `fromId`, `toId`, and `userId` payment fields are
+optional compatibility fields during migration. Recovery administration
+requires `X-Recovery-Admin-Secret` and `X-Admin-ID`; production requires
+`RECOVERY_ADMIN_SECRET` (at least 32 characters).
 
 * Backend-signed and sponsored transactions
 * Internal user-to-user transfers

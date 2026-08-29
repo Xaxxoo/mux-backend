@@ -1,5 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { WalletCreationOrchestrator } from './wallet-creation-orchestrator.service';
+import { WalletCleanupSchedulerService } from './wallet-cleanup-scheduler.service';
 import { WalletCreationOrchestratorController } from './wallet-creation-orchestrator.controller';
 import { EncryptionModule } from '../encryption/encryption.module';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -24,6 +25,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
   controllers: [WalletCreationOrchestratorController],
   providers: [
     WalletCreationOrchestrator,
+    WalletCleanupSchedulerService,
     IdempotencyService,
     CacheService,
     FeatureFlagService,

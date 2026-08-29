@@ -11,7 +11,10 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -25,6 +28,12 @@ import { AdminRecoveryService } from './admin-recovery.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
 import { RecoveryStatus } from './domain/recovery.model';
+import { RecoveryAdminGuard } from './recovery-admin.guard';
+
+interface RecoveryAdminRequest {
+  approvalNotes?: string;
+  rejectionReason?: string;
+}
 
 function parsePaginationParam(
   value: string | undefined,
@@ -576,14 +585,16 @@ export class RecoveryController {
    * Admin endpoint: Approve a recovery request
    */
   @Post('admin/approve/:id')
+  @UseGuards(RecoveryAdminGuard)
   @HttpCode(HttpStatus.OK)
   async approveRecovery(
-    @Param('id') recoveryId: string,
-    @Body() request: { adminId: string; approvalNotes?: string },
+    @Param('id', ParseUUIDPipe) recoveryId: string,
+    @Body() request: RecoveryAdminRequest,
+    @Req() httpRequest: Request,
   ) {
     return this.adminRecoveryService.approveRecovery({
       recoveryId,
-      adminId: request.adminId,
+      adminId: (httpRequest as any).recoveryAdminId,
       approvalNotes: request.approvalNotes,
     });
   }
@@ -592,15 +603,17 @@ export class RecoveryController {
    * Admin endpoint: Reject a recovery request
    */
   @Post('admin/reject/:id')
+  @UseGuards(RecoveryAdminGuard)
   @HttpCode(HttpStatus.OK)
   async rejectRecovery(
-    @Param('id') recoveryId: string,
-    @Body() request: { adminId: string; rejectionReason: string },
+    @Param('id', ParseUUIDPipe) recoveryId: string,
+    @Body() request: RecoveryAdminRequest,
+    @Req() httpRequest: Request,
   ) {
     return this.adminRecoveryService.rejectRecovery({
       recoveryId,
-      adminId: request.adminId,
-      rejectionReason: request.rejectionReason,
+      adminId: (httpRequest as any).recoveryAdminId,
+      rejectionReason: request.rejectionReason ?? '',
     });
   }
 
@@ -608,6 +621,7 @@ export class RecoveryController {
    * Admin endpoint: Get all pending recovery requests
    */
   @Get('admin/pending')
+  @UseGuards(RecoveryAdminGuard)
   async getPendingRecoveries() {
     return this.adminRecoveryService.getPendingRecoveries();
   }
@@ -616,7 +630,8 @@ export class RecoveryController {
    * Admin endpoint: Get recovery request history
    */
   @Get('admin/history/:id')
-  async getRecoveryHistory(@Param('id') recoveryId: string) {
+  @UseGuards(RecoveryAdminGuard)
+  async getRecoveryHistory(@Param('id', ParseUUIDPipe) recoveryId: string) {
     return this.adminRecoveryService.getRecoveryHistory(recoveryId);
   }
 }

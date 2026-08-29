@@ -71,20 +71,22 @@ export class CreatePaymentDto {
     example: 1,
     description: 'Legacy sender ID (LegacyUser.id)',
   })
+  @IsOptional()
   @IsInt({ message: 'fromId must be an integer' })
   @IsNotEmpty({ message: 'fromId is required' })
   @Min(1, { message: 'fromId must be greater than 0' })
-  fromId: number;
+  fromId?: number;
 
   /** Legacy receiver ID (LegacyUser.id) — required for payment record FK. */
   @ApiProperty({
     example: 2,
     description: 'Legacy receiver ID (LegacyUser.id)',
   })
+  @IsOptional()
   @IsInt({ message: 'toId must be an integer' })
   @IsNotEmpty({ message: 'toId is required' })
   @Min(1, { message: 'toId must be greater than 0' })
-  toId: number;
+  toId?: number;
 
   /** Client-supplied idempotency key. Replaying the same key returns the original payment instead of creating a duplicate. */
   @ApiProperty({
