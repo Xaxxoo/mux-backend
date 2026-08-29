@@ -87,7 +87,8 @@ delay is returned in the `Retry-After` header.
 
 Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
 send `PATCH /v1/maintenance` with normal API-key authentication plus the
-`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`:
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
+is required in production — startup fails fast if it is unset.
 
 ```json
 {

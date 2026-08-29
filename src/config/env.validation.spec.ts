@@ -212,6 +212,93 @@ describe('validateEnv()', () => {
     });
   });
 
+  describe('STELLAR_HORIZON_MAX_RETRIES', () => {
+    it('defaults to 3', () => {
+      expect(validateEnv(env()).STELLAR_HORIZON_MAX_RETRIES).toBe(3);
+    });
+
+    it('accepts a custom value', () => {
+      expect(
+        validateEnv(env({ STELLAR_HORIZON_MAX_RETRIES: '5' }))
+          .STELLAR_HORIZON_MAX_RETRIES,
+      ).toBe(5);
+    });
+
+    it('rejects a negative value', () => {
+      expectError(
+        env({ STELLAR_HORIZON_MAX_RETRIES: '-1' }),
+        'STELLAR_HORIZON_MAX_RETRIES must be >= 0',
+      );
+    });
+
+    it('rejects a value above 100', () => {
+      expectError(
+        env({ STELLAR_HORIZON_MAX_RETRIES: '101' }),
+        'STELLAR_HORIZON_MAX_RETRIES must be <= 100',
+      );
+    });
+
+    it('rejects a non-integer string', () => {
+      expectError(
+        env({ STELLAR_HORIZON_MAX_RETRIES: 'abc' }),
+        'STELLAR_HORIZON_MAX_RETRIES must be an integer',
+      );
+    });
+  });
+
+  describe('MAINTENANCE_ADMIN_SECRET in production', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+    });
+
+    it('fails closed when unset in production', () => {
+      process.env.NODE_ENV = 'production';
+      const exitSpy = jest
+        .spyOn(process, 'exit')
+        .mockImplementation(() => {
+          throw new Error('process.exit called');
+        });
+      const stderrSpy = jest
+        .spyOn(process.stderr, 'write')
+        .mockImplementation(() => true);
+
+      try {
+        expect(() =>
+          validateEnv(env({ MAINTENANCE_ADMIN_SECRET: '' })),
+        ).toThrow('process.exit called');
+        expect(stderrSpy.mock.calls[0][0]).toContain(
+          'MAINTENANCE_ADMIN_SECRET is required in production',
+        );
+      } finally {
+        exitSpy.mockRestore();
+        stderrSpy.mockRestore();
+      }
+    });
+
+    it('passes when MAINTENANCE_ADMIN_SECRET is set in production', () => {
+      process.env.NODE_ENV = 'production';
+      const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit called');
+      });
+
+      try {
+        expect(() =>
+          validateEnv(
+            env({
+              MAINTENANCE_ADMIN_SECRET: 'a-real-secret',
+              AUTH_IDENTITY_PROVIDER: 'CLERK',
+              CLERK_JWT_PUBLIC_KEY: 'key',
+            }),
+          ),
+        ).not.toThrow();
+      } finally {
+        exitSpy.mockRestore();
+      }
+    });
+  });
+
   describe('multiple violations', () => {
     it('reports all errors in a single throw', () => {
       const badEnv = env({
