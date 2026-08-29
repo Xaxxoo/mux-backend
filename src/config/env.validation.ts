@@ -23,6 +23,7 @@ export interface ValidatedEnv {
   JSON_BODY_LIMIT_BYTES: number;
   MAINTENANCE_ADMIN_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
+  EXPORT_SIGNING_SECRET: string;
   STELLAR_HORIZON_URL: string;
   BALANCE_STALE_THRESHOLD_MS: number;
   WEBHOOK_MAX_RETRIES: number;
@@ -202,6 +203,20 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     32,
     violations,
   );
+  const EXPORT_SIGNING_SECRET = env.EXPORT_SIGNING_SECRET?.trim() ?? '';
+  if (process.env.NODE_ENV === 'production') {
+    if (!EXPORT_SIGNING_SECRET) {
+      violations.push({
+        variable: 'EXPORT_SIGNING_SECRET',
+        message: 'EXPORT_SIGNING_SECRET is required in production',
+      });
+    } else if (EXPORT_SIGNING_SECRET.length < 32) {
+      violations.push({
+        variable: 'EXPORT_SIGNING_SECRET',
+        message: 'EXPORT_SIGNING_SECRET must be at least 32 characters long in production',
+      });
+    }
+  }
   const STELLAR_HORIZON_URL = requireUrl(
     env,
     'STELLAR_HORIZON_URL',
@@ -421,6 +436,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     JSON_BODY_LIMIT_BYTES,
     MAINTENANCE_ADMIN_SECRET,
     WALLET_ENCRYPTION_KEY,
+    EXPORT_SIGNING_SECRET,
     STELLAR_HORIZON_URL,
     BALANCE_STALE_THRESHOLD_MS,
     WEBHOOK_MAX_RETRIES,

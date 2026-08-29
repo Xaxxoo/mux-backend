@@ -26,6 +26,15 @@ import { PrismaService } from '../prisma/prisma.service';
 describe('generateDownloadToken / verifyDownloadToken (#552)', () => {
   const JOB_ID = 'job-uuid-1';
   const PROJECT_ID = 'proj-uuid-1';
+  const exportSigningSecret = 'a'.repeat(32);
+
+  beforeEach(() => {
+    process.env.EXPORT_SIGNING_SECRET = exportSigningSecret;
+  });
+
+  afterEach(() => {
+    delete process.env.EXPORT_SIGNING_SECRET;
+  });
 
   it('generates a token that round-trips through verify', () => {
     const { token } = generateDownloadToken(JOB_ID, PROJECT_ID);
@@ -87,9 +96,7 @@ describe('generateDownloadToken / verifyDownloadToken (#552)', () => {
 
     // Sign it properly so signature is valid, expiry is the issue
     const crypto = require('crypto');
-    const secret =
-      process.env.EXPORT_SIGNING_SECRET ||
-      'mux-export-signing-secret-change-in-production';
+    const secret = process.env.EXPORT_SIGNING_SECRET;
     const sig = crypto
       .createHmac('sha256', secret)
       .update(payloadB64)
@@ -107,9 +114,7 @@ describe('generateDownloadToken / verifyDownloadToken (#552)', () => {
 
   it('rejects a token with a non-JSON payload', () => {
     const crypto = require('crypto');
-    const secret =
-      process.env.EXPORT_SIGNING_SECRET ||
-      'mux-export-signing-secret-change-in-production';
+    const secret = process.env.EXPORT_SIGNING_SECRET;
     const badPayload = Buffer.from('not-json').toString('base64url');
     const sig = crypto
       .createHmac('sha256', secret)

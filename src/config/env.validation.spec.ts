@@ -12,6 +12,7 @@ const VALID_ENV: NodeJS.ProcessEnv = {
   NODE_ENV: 'test',
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_test',
   WALLET_ENCRYPTION_KEY: 'a'.repeat(32), // exactly 32 chars
+  EXPORT_SIGNING_SECRET: 'b'.repeat(32),
   STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
 };
 
@@ -73,6 +74,32 @@ describe('validateEnv()', () => {
         env({ WALLET_ENCRYPTION_KEY: 'short' }),
         'WALLET_ENCRYPTION_KEY must be at least 32 characters',
       );
+    });
+  });
+
+  describe('EXPORT_SIGNING_SECRET', () => {
+    it('requires a value in production', () => {
+      const originalNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+
+      try {
+        expect(() =>
+          validateEnv(env({ EXPORT_SIGNING_SECRET: undefined })),
+        ).toThrow('EXPORT_SIGNING_SECRET is required in production');
+      } finally {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    });
+
+    it('allows a missing value outside production', () => {
+      const originalNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'test';
+
+      try {
+        expect(() => validateEnv(env({ EXPORT_SIGNING_SECRET: undefined }))).not.toThrow();
+      } finally {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
     });
   });
 

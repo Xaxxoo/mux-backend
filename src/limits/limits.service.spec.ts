@@ -27,6 +27,9 @@ describe('LimitsService', () => {
       transaction: {
         findMany: jest.fn(),
       },
+      payment: {
+        findMany: jest.fn(),
+      },
     };
     prisma.$transaction = jest.fn((cb) => cb(prisma));
     eventEmitter = { emit: jest.fn() };
@@ -178,6 +181,19 @@ describe('LimitsService', () => {
         service.checkLimits(walletId, 999),
       ).resolves.not.toThrow();
       expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    });
+
+    it('should include payment records in the daily usage total', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 200,
+        dailyLimit: 100,
+      });
+      prisma.transaction.findMany.mockResolvedValue([{ amount: '50' }]);
+      prisma.payment.findMany.mockResolvedValue([{ amount: '30' }]);
+
+      await expect(service.checkLimits(walletId, 21)).rejects.toBeInstanceOf(
+        LimitExceededException,
+      );
     });
   });
 
