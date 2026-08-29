@@ -13,6 +13,7 @@ const VALID_ENV: NodeJS.ProcessEnv = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_test',
   WALLET_ENCRYPTION_KEY: 'a'.repeat(32), // exactly 32 chars
   STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
+  STELLAR_NETWORK: 'TESTNET',
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -57,15 +58,22 @@ describe('validateEnv()', () => {
 
   describe('WALLET_ENCRYPTION_KEY', () => {
     it('accepts a key of exactly 32 characters', () => {
-      expect(() => validateEnv(env({ WALLET_ENCRYPTION_KEY: 'x'.repeat(32) }))).not.toThrow();
+      expect(() =>
+        validateEnv(env({ WALLET_ENCRYPTION_KEY: 'x'.repeat(32) })),
+      ).not.toThrow();
     });
 
     it('accepts a key longer than 32 characters', () => {
-      expect(() => validateEnv(env({ WALLET_ENCRYPTION_KEY: 'x'.repeat(64) }))).not.toThrow();
+      expect(() =>
+        validateEnv(env({ WALLET_ENCRYPTION_KEY: 'x'.repeat(64) })),
+      ).not.toThrow();
     });
 
     it('rejects when absent', () => {
-      expectError(env({ WALLET_ENCRYPTION_KEY: undefined }), 'WALLET_ENCRYPTION_KEY is required');
+      expectError(
+        env({ WALLET_ENCRYPTION_KEY: undefined }),
+        'WALLET_ENCRYPTION_KEY is required',
+      );
     });
 
     it('rejects a key shorter than 32 characters', () => {
@@ -88,7 +96,10 @@ describe('validateEnv()', () => {
     });
 
     it('rejects when absent', () => {
-      expectError(env({ STELLAR_HORIZON_URL: undefined }), 'STELLAR_HORIZON_URL is required');
+      expectError(
+        env({ STELLAR_HORIZON_URL: undefined }),
+        'STELLAR_HORIZON_URL is required',
+      );
     });
 
     it('rejects a non-URL string', () => {
@@ -102,6 +113,125 @@ describe('validateEnv()', () => {
       expectError(
         env({ STELLAR_HORIZON_URL: 'ftp://example.com' }),
         'STELLAR_HORIZON_URL must use http or https protocol',
+      );
+    });
+  });
+
+  describe('STELLAR_NETWORK', () => {
+    it('accepts TESTNET', () => {
+      expect(() =>
+        validateEnv(env({ STELLAR_NETWORK: 'TESTNET' })),
+      ).not.toThrow();
+    });
+
+    it('accepts MAINNET when paired with a mainnet Horizon URL', () => {
+      expect(() =>
+        validateEnv(
+          env({
+            STELLAR_NETWORK: 'MAINNET',
+            STELLAR_HORIZON_URL: 'https://horizon.stellar.org',
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    it('rejects when absent', () => {
+      expectError(
+        env({ STELLAR_NETWORK: undefined }),
+        'STELLAR_NETWORK is required',
+      );
+    });
+
+    it('rejects an unknown value', () => {
+      expectError(
+        env({ STELLAR_NETWORK: 'DEVNET' }),
+        'STELLAR_NETWORK must be one of: TESTNET, MAINNET',
+      );
+    });
+
+    it('rejects MAINNET paired with a testnet Horizon URL', () => {
+      expectError(
+        env({
+          STELLAR_NETWORK: 'MAINNET',
+          STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
+        }),
+        'STELLAR_HORIZON_URL appears to point to testnet but STELLAR_NETWORK=MAINNET',
+      );
+    });
+
+    it('rejects TESTNET paired with a mainnet Horizon URL', () => {
+      expectError(
+        env({
+          STELLAR_NETWORK: 'TESTNET',
+          STELLAR_HORIZON_URL: 'https://horizon.mainnet.stellar.org',
+        }),
+        'STELLAR_HORIZON_URL appears to point to mainnet but STELLAR_NETWORK=TESTNET',
+      );
+    });
+  });
+
+  describe('BALANCE_SYNC_INTERVAL_MS', () => {
+    it('defaults to 10 minutes', () => {
+      expect(validateEnv(env()).BALANCE_SYNC_INTERVAL_MS).toBe(600_000);
+    });
+
+    it('accepts a custom value', () => {
+      expect(
+        validateEnv(env({ BALANCE_SYNC_INTERVAL_MS: '120000' }))
+          .BALANCE_SYNC_INTERVAL_MS,
+      ).toBe(120_000);
+    });
+
+    it('rejects values below 1000ms', () => {
+      expectError(
+        env({ BALANCE_SYNC_INTERVAL_MS: '500' }),
+        'BALANCE_SYNC_INTERVAL_MS must be >= 1000',
+      );
+    });
+  });
+
+  describe('BALANCE_SYNC_MAX_RETRIES', () => {
+    it('defaults to 3', () => {
+      expect(validateEnv(env()).BALANCE_SYNC_MAX_RETRIES).toBe(3);
+    });
+
+    it('rejects a negative value', () => {
+      expectError(
+        env({ BALANCE_SYNC_MAX_RETRIES: '-1' }),
+        'BALANCE_SYNC_MAX_RETRIES must be >= 0',
+      );
+    });
+
+    it('rejects values above 20', () => {
+      expectError(
+        env({ BALANCE_SYNC_MAX_RETRIES: '21' }),
+        'BALANCE_SYNC_MAX_RETRIES must be <= 20',
+      );
+    });
+  });
+
+  describe('CORS_ORIGINS', () => {
+    it('defaults to localhost:3000', () => {
+      expect(validateEnv(env()).CORS_ORIGINS).toEqual([
+        'http://localhost:3000',
+      ]);
+    });
+
+    it('accepts a comma-separated list of valid origins', () => {
+      expect(
+        validateEnv(
+          env({
+            CORS_ORIGINS:
+              'https://app.mux.finance, https://partner.example.com',
+          }),
+        ).CORS_ORIGINS,
+      ).toEqual(['https://app.mux.finance', 'https://partner.example.com']);
+    });
+
+    it('rejects an invalid origin', () => {
+      expectError(
+        env({ CORS_ORIGINS: 'not-a-url' }),
+        'CORS_ORIGINS entry "not-a-url" must be a valid URL',
       );
     });
   });
@@ -164,7 +294,10 @@ describe('validateEnv()', () => {
     });
 
     it('rejects 0', () => {
-      expectError(env({ AUTH_RATE_LIMIT_MAX: '0' }), 'AUTH_RATE_LIMIT_MAX must be >= 1');
+      expectError(
+        env({ AUTH_RATE_LIMIT_MAX: '0' }),
+        'AUTH_RATE_LIMIT_MAX must be >= 1',
+      );
     });
   });
 
@@ -194,7 +327,10 @@ describe('validateEnv()', () => {
     });
 
     it('rejects a value above 100', () => {
-      expectError(env({ WEBHOOK_MAX_RETRIES: '101' }), 'WEBHOOK_MAX_RETRIES must be <= 100');
+      expectError(
+        env({ WEBHOOK_MAX_RETRIES: '101' }),
+        'WEBHOOK_MAX_RETRIES must be <= 100',
+      );
     });
   });
 
@@ -335,7 +471,9 @@ describe('validateEnv()', () => {
       expect(result.AUTH_RATE_LIMIT_MAX).toBe(25);
       expect(result.API_KEY_ROTATION_GRACE_SECONDS).toBe(7200);
       expect(result.DATABASE_URL).toBe(VALID_ENV.DATABASE_URL);
-      expect(result.WALLET_ENCRYPTION_KEY).toBe(VALID_ENV.WALLET_ENCRYPTION_KEY);
+      expect(result.WALLET_ENCRYPTION_KEY).toBe(
+        VALID_ENV.WALLET_ENCRYPTION_KEY,
+      );
       expect(result.STELLAR_HORIZON_URL).toBe(VALID_ENV.STELLAR_HORIZON_URL);
     });
 
