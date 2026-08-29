@@ -66,6 +66,21 @@ export interface WalletCreationResult {
   privateKey: string;
 }
 
+/**
+ * Result of a wallet key rotation (issue #692).
+ *
+ * Rotation uses the successor model: a new wallet is created with fresh key
+ * material and the predecessor is transitioned to `ROTATING` with its
+ * `successorId` set. No private key is returned — key material never leaves the
+ * key-management boundary.
+ */
+export interface WalletKeyRotationResult {
+  /** The predecessor wallet, now `ROTATING` with `successorId` populated. */
+  predecessor: PublicWallet;
+  /** The freshly created successor wallet holding the new key. */
+  successor: PublicWallet;
+}
+
 export interface SigningResult {
   signature: string;
   transactionHash?: string;
@@ -326,36 +341,43 @@ export class WalletsService implements OnModuleDestroy {
     if (!existing)
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     try {
-      const key = await this.generateKeyWithRetry('key_rotation', {
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { walletId, operation: 'rotation' },
-      });
-      const updated = await this.prisma.wallet.update({
-        where: { id: walletId },
-        data: {
-          publicKey: key.publicKey,
-          encryptedSecret: key.encryptedData,
-          secretVersion: existing.secretVersion + 1,
-          encryptionVersion: key.encryptionVersion,
-          updatedAt: new Date(),
-        },
-      });
-      const wallet = this.mapPrismaWalletToDomain(updated);
-      const privateKey = this.encryptionService.deserializeAndDecrypt(
-        key.encryptedData,
-      );
+      const rotation = await this.keyManagementService.rotateKey(walletId);
+
+      const [predecessorRecord, successorRecord] = await Promise.all([
+        this.prisma.wallet.findUnique({
+          where: { id: rotation.predecessorWalletId },
+        }),
+        this.prisma.wallet.findUnique({
+          where: { id: rotation.successorWalletId },
+        }),
+      ]);
+
+      if (!predecessorRecord || !successorRecord) {
+        throw new Error(
+          'Rotation completed but wallet records could not be read',
+        );
+      }
+
+      const successor = this.mapPrismaWalletToDomain(successorRecord);
+      const predecessor = this.mapPrismaWalletToDomain(predecessorRecord);
+
       this.emitDomainEvent('wallet.rotated', () =>
         this.webhookEventEmitter?.emitWalletRotated({
-          walletId: wallet.id,
-          userId: wallet.userId,
-          publicKey: wallet.publicKey,
-          network: wallet.network,
-          secretVersion: wallet.secretVersion,
+          walletId: successor.id,
+          userId: successor.userId,
+          publicKey: successor.publicKey,
+          network: successor.network,
+          secretVersion: successor.secretVersion,
         }),
       );
-      this.recordMetric('key_rotate', 'success', startedAt, wallet.network);
-      return { wallet, privateKey };
+      this.recordMetric('key_rotate', 'success', startedAt, successor.network);
+
+      return {
+        predecessor: this.toPublicWallet(predecessor),
+        successor: this.toPublicWallet(successor),
+      };
     } catch (error) {
+      if (error instanceof NotFoundException) throw error;
       this.logger.error(`Failed to rotate wallet ${walletId}:`, error);
       this.recordMetric(
         'key_rotate',

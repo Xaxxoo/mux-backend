@@ -132,48 +132,63 @@ describe('Wallets KeyGen Integration', () => {
       expect(generateKeySpy).toHaveBeenCalledTimes(1);
     });
 
-    it('should use KeyManagementService during wallet key rotation', async () => {
-      const generateKeySpy = jest.spyOn(keyManagementService, 'generateKey');
+    it('should delegate wallet key rotation to KeyManagementService.rotateKey (#692)', async () => {
+      const rotateKeySpy = jest
+        .spyOn(keyManagementService, 'rotateKey')
+        .mockResolvedValue({
+          predecessorWalletId: 'wallet-123',
+          successorWalletId: 'wallet-456',
+          successorPublicKey: 'new-public-key',
+          successorKeyVersion: 1,
+        });
 
-      mockPrisma.wallet.findUnique.mockResolvedValue({
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'old-public-key',
-        encryptedSecret: 'old-encrypted-secret',
-        secretVersion: 1,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      mockPrisma.wallet.findUnique.mockImplementation(
+        ({ where: { id } }: { where: { id: string } }) => {
+          if (id === 'wallet-123') {
+            return Promise.resolve({
+              id: 'wallet-123',
+              userId: 'user-123',
+              publicKey: 'old-public-key',
+              encryptedSecret: 'old-encrypted-secret',
+              secretVersion: 1,
+              network: WalletNetwork.TESTNET,
+              status: 'ROTATING',
+              encryptionVersion: 1,
+              statusReason: 'Key rotation initiated',
+              statusChangedAt: new Date(),
+              rotatedFromId: null,
+              successorId: 'wallet-456',
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+          if (id === 'wallet-456') {
+            return Promise.resolve({
+              id: 'wallet-456',
+              userId: 'user-123',
+              publicKey: 'new-public-key',
+              encryptedSecret: 'new-encrypted-secret',
+              secretVersion: 2,
+              network: WalletNetwork.TESTNET,
+              status: 'ACTIVE',
+              encryptionVersion: 1,
+              statusReason: null,
+              statusChangedAt: new Date(),
+              rotatedFromId: 'wallet-123',
+              successorId: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+          return Promise.resolve(null);
+        },
+      );
 
-      mockPrisma.wallet.update.mockResolvedValue({
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'new-public-key',
-        encryptedSecret: 'new-encrypted-secret',
-        secretVersion: 2,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      const result = await walletsService.rotateWalletKey('wallet-123');
 
-      await walletsService.rotateWalletKey('wallet-123');
-
-      // Verify KeyManagementService.generateKey was called
-      expect(generateKeySpy).toHaveBeenCalledWith({
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { walletId: 'wallet-123', operation: 'rotation' },
-      });
+      expect(rotateKeySpy).toHaveBeenCalledWith('wallet-123');
+      expect(result.successor.id).toBe('wallet-456');
+      expect(result.predecessor.id).toBe('wallet-123');
     });
   });
 
