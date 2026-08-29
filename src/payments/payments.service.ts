@@ -2,11 +2,16 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
 import { PaymentStatus } from './entities/payment.entity';
+import { PaymentCreatedEvent } from './events/payment-created.event';
+import { PaymentCompletedEvent } from './events/payment-completed.event';
+import { PaymentFailedEvent } from './events/payment-failed.event';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -17,10 +22,13 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
@@ -41,7 +49,7 @@ export class PaymentsService {
     // Scope limits check to the wallet owner (legacy userId)
     await this.limitsService.checkLimits(fromId, amount);
 
-    return this.prisma.transaction.create({
+    const payment = await this.prisma.transaction.create({
       data: {
         fromId,
         toId,
@@ -52,6 +60,13 @@ export class PaymentsService {
         status: 'PENDING',
       },
     });
+
+    this.eventEmitter.emit(
+      'payment.created',
+      new PaymentCreatedEvent(payment.id, walletId, amount, currency, fromId),
+    );
+
+    return payment;
   }
 
   findAll() {
@@ -77,10 +92,37 @@ export class PaymentsService {
       }
     }
 
-    return this.prisma.payment.update({
+    const result = await this.prisma.payment.update({
       where: { id },
       data: updatePaymentDto,
     });
+
+    if (updatePaymentDto.status === PaymentStatus.CONFIRMED) {
+      this.eventEmitter.emit(
+        'payment.completed',
+        new PaymentCompletedEvent(
+          String(id),
+          payment.walletId ?? '',
+          Number(payment.amount),
+          payment.currency ?? '',
+          payment.userId ?? '',
+        ),
+      );
+    } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
+      this.eventEmitter.emit(
+        'payment.failed',
+        new PaymentFailedEvent(
+          String(id),
+          payment.walletId ?? '',
+          Number(payment.amount),
+          payment.currency ?? '',
+          payment.userId ?? '',
+          'Payment marked as failed',
+        ),
+      );
+    }
+
+    return result;
   }
 
   remove(id: string) {
