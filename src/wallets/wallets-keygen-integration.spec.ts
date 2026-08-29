@@ -94,6 +94,10 @@ describe('Wallets KeyGen Integration', () => {
 
     // Setup common mocks
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation(
+      async (cb: (tx: any) => Promise<any>) =>
+        cb({ wallet: mockPrisma.wallet }),
+    );
   });
 
   describe('WalletsService - KeyManagementService Integration', () => {

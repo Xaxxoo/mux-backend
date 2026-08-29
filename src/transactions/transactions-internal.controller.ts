@@ -1,7 +1,15 @@
-import { Controller, Post, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Controller,
+  Post,
+  Get,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { TransactionPollingService } from './transaction-polling.service';
 import { TransactionQueryService } from './transaction-query.service';
+import { RelayerFundingService } from './relayer-funding.service';
 import { CronSecretGuard } from '../common/cron/cron-secret.guard';
 
 /**
@@ -16,6 +24,7 @@ export class TransactionsInternalController {
   constructor(
     private readonly pollingService: TransactionPollingService,
     private readonly queryService: TransactionQueryService,
+    private readonly relayerFundingService: RelayerFundingService,
   ) {}
 
   @ApiOperation({
@@ -28,7 +37,8 @@ export class TransactionsInternalController {
   @ApiQuery({
     name: 'limit',
     required: false,
-    description: 'Maximum number of transactions to poll (default 100, max 1000)',
+    description:
+      'Maximum number of transactions to poll (default 100, max 1000)',
     example: 100,
   })
   @ApiResponse({
@@ -54,6 +64,27 @@ export class TransactionsInternalController {
   }
 
   @ApiOperation({
+    summary: 'Check a relayer wallet balance and auto-fund if below minimum',
+    description:
+      'Checks the native XLM balance of a fee-source (relayer) wallet. Testnet ' +
+      'wallets below the minimum are funded via Friendbot; mainnet wallets ' +
+      'below the minimum only raise a low-balance alert. Requires X-Cron-Secret header.',
+  })
+  @ApiQuery({ name: 'walletId', required: true })
+  @ApiQuery({ name: 'minBalance', required: false, example: '5' })
+  @ApiResponse({ status: 200, description: 'Funding check result' })
+  @Post('relayer-funding/check')
+  checkRelayerFunding(
+    @Query('walletId') walletId: string,
+    @Query('minBalance') minBalance?: string,
+  ) {
+    if (!walletId) {
+      throw new BadRequestException('walletId is required');
+    }
+    return this.relayerFundingService.checkAndFundRelayer(walletId, minBalance);
+  }
+
+  @ApiOperation({
     summary: 'List admin transactions stuck in PENDING status',
     description:
       'Admin endpoint to find transactions that have been in PENDING status longer than threshold. ' +
@@ -70,7 +101,8 @@ export class TransactionsInternalController {
   @ApiQuery({
     name: 'limit',
     required: false,
-    description: 'Maximum number of transactions to return (default 100, max 1000)',
+    description:
+      'Maximum number of transactions to return (default 100, max 1000)',
     example: 100,
   })
   @ApiQuery({
@@ -116,9 +148,7 @@ export class TransactionsInternalController {
     const parsedLimit = limit
       ? Math.min(Math.max(parseInt(limit, 10), 1), 1000)
       : 100;
-    const parsedOffset = offset
-      ? Math.max(parseInt(offset, 10), 0)
-      : 0;
+    const parsedOffset = offset ? Math.max(parseInt(offset, 10), 0) : 0;
 
     return this.queryService.findStuckPendingTransactions(
       parsedThreshold,

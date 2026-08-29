@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { KeyManagementService } from './key-management.service';
 import type { GenerateKeyRequest, SignRequest } from './key-management.service';
+import { EncryptionMigrationService } from './encryption-migration.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
 import {
@@ -85,7 +86,28 @@ export class KeyManagementController {
   constructor(
     private readonly keyManagementService: KeyManagementService,
     private readonly auditService: KeyRotationAuditService,
+    private readonly encryptionMigrationService: EncryptionMigrationService,
   ) {}
+
+  /**
+   * Upgrades stored ciphertext for wallets on an outdated encryption
+   * envelope version (internal use only).
+   */
+  @ApiOperation({
+    summary: 'Migrate wallets to the current encryption envelope version',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Migration batch result: scanned, migrated, and failed counts.',
+  })
+  @Post('migrate-encryption-version')
+  @HttpCode(HttpStatus.OK)
+  async migrateEncryptionVersion(@Query('batchSize') batchSize?: string) {
+    const parsedBatchSize = parsePaginationParam(batchSize, 'batchSize', 500);
+    return this.encryptionMigrationService.migrateEncryptionVersions(
+      parsedBatchSize,
+    );
+  }
 
   /**
    * Generates a new key (internal use only)
