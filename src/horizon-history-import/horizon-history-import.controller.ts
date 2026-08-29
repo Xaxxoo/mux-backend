@@ -7,6 +7,7 @@ import {
   Param,
   Post,
   Query,
+  UseGuards,
   ValidationPipe,
 } from '@nestjs/common';
 import {
@@ -18,6 +19,8 @@ import {
 import { HorizonHistoryImportService } from './horizon-history-import.service';
 import { ResumeImportDto } from './dto/resume-import.dto';
 import { ImportResultResponseDto } from './dto/import-result.response';
+import { HorizonImportGuard } from './horizon-import.guard';
+import { SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
 
 /**
  * Horizon History Import Controller
@@ -51,6 +54,8 @@ export class HorizonHistoryImportController {
    */
   @Post(':accountId/resume')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(HorizonImportGuard)
+  @SensitiveEndpoint()
   @ApiOperation({ summary: 'Resume Horizon history import for an account' })
   @ApiParam({ name: 'accountId', description: 'Stellar account public key' })
   @ApiResponse({
