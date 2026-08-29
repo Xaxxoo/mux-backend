@@ -24,7 +24,11 @@ export interface ValidatedEnv {
   MAINTENANCE_ADMIN_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
+  STELLAR_NETWORK: string;
   BALANCE_STALE_THRESHOLD_MS: number;
+  BALANCE_SYNC_INTERVAL_MS: number;
+  BALANCE_SYNC_MAX_RETRIES: number;
+  CORS_ORIGINS: string[];
   WEBHOOK_MAX_RETRIES: number;
   WEBHOOK_RETRY_BACKOFF_MS: number;
   WEBHOOK_TIMEOUT_MS: number;
@@ -156,6 +160,56 @@ function requireMinLength(
   return val;
 }
 
+function requireEnum(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  allowedValues: string[],
+  violations: EnvViolation[],
+): string {
+  const val = requireString(env, key, violations);
+  if (!val) return '';
+  if (!allowedValues.includes(val)) {
+    violations.push({
+      variable: key,
+      message: `${key} must be one of: ${allowedValues.join(', ')} (received "${val}")`,
+    });
+  }
+  return val;
+}
+
+function optionalOriginList(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: string[],
+  violations: EnvViolation[],
+): string[] {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === '') {
+    return defaultValue;
+  }
+  const origins = raw
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  for (const origin of origins) {
+    try {
+      const url = new URL(origin);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        violations.push({
+          variable: key,
+          message: `${key} entry "${origin}" must use http or https protocol`,
+        });
+      }
+    } catch {
+      violations.push({
+        variable: key,
+        message: `${key} entry "${origin}" must be a valid URL`,
+      });
+    }
+  }
+  return origins.length > 0 ? origins : defaultValue;
+}
+
 function optionalBoolean(
   env: NodeJS.ProcessEnv,
   key: string,
@@ -207,11 +261,45 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     'STELLAR_HORIZON_URL',
     violations,
   );
-  const MAINTENANCE_ADMIN_SECRET =
-    env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const STELLAR_NETWORK = requireEnum(
+    env,
+    'STELLAR_NETWORK',
+    ['TESTNET', 'MAINNET'],
+    violations,
+  );
+
+  // Cross-check that the Horizon URL matches the configured network so a
+  // mismatched pairing (e.g. STELLAR_NETWORK=MAINNET pointed at the testnet
+  // Horizon instance) is caught at boot instead of surfacing as confusing
+  // balance/transaction data later.
+  if (STELLAR_NETWORK && STELLAR_HORIZON_URL) {
+    const urlLower = STELLAR_HORIZON_URL.toLowerCase();
+    if (STELLAR_NETWORK === 'MAINNET' && urlLower.includes('testnet')) {
+      violations.push({
+        variable: 'STELLAR_HORIZON_URL',
+        message:
+          'STELLAR_HORIZON_URL appears to point to testnet but STELLAR_NETWORK=MAINNET',
+      });
+    }
+    if (STELLAR_NETWORK === 'TESTNET' && urlLower.includes('mainnet')) {
+      violations.push({
+        variable: 'STELLAR_HORIZON_URL',
+        message:
+          'STELLAR_HORIZON_URL appears to point to mainnet but STELLAR_NETWORK=TESTNET',
+      });
+    }
+  }
+
+  const MAINTENANCE_ADMIN_SECRET = env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
 
   // ── Optional numeric fields ───────────────────────────────────────────────
-  const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
+  const PORT = optionalInt(
+    env,
+    'PORT',
+    3000,
+    { min: 1, max: 65535 },
+    violations,
+  );
   const JSON_BODY_LIMIT_BYTES = optionalInt(
     env,
     'JSON_BODY_LIMIT_BYTES',
@@ -224,6 +312,26 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     'BALANCE_STALE_THRESHOLD_MS',
     300_000,
     { min: 0 },
+    violations,
+  );
+  const BALANCE_SYNC_INTERVAL_MS = optionalInt(
+    env,
+    'BALANCE_SYNC_INTERVAL_MS',
+    10 * 60 * 1000,
+    { min: 1_000 },
+    violations,
+  );
+  const BALANCE_SYNC_MAX_RETRIES = optionalInt(
+    env,
+    'BALANCE_SYNC_MAX_RETRIES',
+    3,
+    { min: 0, max: 20 },
+    violations,
+  );
+  const CORS_ORIGINS = optionalOriginList(
+    env,
+    'CORS_ORIGINS',
+    ['http://localhost:3000'],
     violations,
   );
   const WEBHOOK_MAX_RETRIES = optionalInt(
@@ -334,21 +442,24 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     if (!AUTH_IDENTITY_PROVIDER) {
       violations.push({
         variable: 'AUTH_IDENTITY_PROVIDER',
-        message: 'AUTH_IDENTITY_PROVIDER is required in production (set to CLERK or BETTER_AUTH)',
+        message:
+          'AUTH_IDENTITY_PROVIDER is required in production (set to CLERK or BETTER_AUTH)',
       });
     }
 
     if (AUTH_IDENTITY_PROVIDER === 'CLERK' && !CLERK_JWT_PUBLIC_KEY) {
       violations.push({
         variable: 'CLERK_JWT_PUBLIC_KEY',
-        message: 'CLERK_JWT_PUBLIC_KEY is required when AUTH_IDENTITY_PROVIDER=CLERK',
+        message:
+          'CLERK_JWT_PUBLIC_KEY is required when AUTH_IDENTITY_PROVIDER=CLERK',
       });
     }
 
     if (AUTH_IDENTITY_PROVIDER === 'BETTER_AUTH' && !BETTER_AUTH_JWKS_URL) {
       violations.push({
         variable: 'BETTER_AUTH_JWKS_URL',
-        message: 'BETTER_AUTH_JWKS_URL is required when AUTH_IDENTITY_PROVIDER=BETTER_AUTH',
+        message:
+          'BETTER_AUTH_JWKS_URL is required when AUTH_IDENTITY_PROVIDER=BETTER_AUTH',
       });
     }
   }
@@ -358,8 +469,10 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
 
   // When OTEL is explicitly enabled, the OTLP endpoint is required so traces
   // are not silently dropped.
-  const OTEL_EXPORTER_OTLP_ENDPOINT = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ?? '';
-  const OTEL_EXPORTER_OTLP_PROTOCOL = env.OTEL_EXPORTER_OTLP_PROTOCOL?.trim() ?? 'http/protobuf';
+  const OTEL_EXPORTER_OTLP_ENDPOINT =
+    env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ?? '';
+  const OTEL_EXPORTER_OTLP_PROTOCOL =
+    env.OTEL_EXPORTER_OTLP_PROTOCOL?.trim() ?? 'http/protobuf';
   const OTEL_SERVICE_NAME = env.OTEL_SERVICE_NAME?.trim() ?? 'mux-backend';
 
   if (OTEL_ENABLED) {
@@ -422,7 +535,11 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     MAINTENANCE_ADMIN_SECRET,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
+    STELLAR_NETWORK,
     BALANCE_STALE_THRESHOLD_MS,
+    BALANCE_SYNC_INTERVAL_MS,
+    BALANCE_SYNC_MAX_RETRIES,
+    CORS_ORIGINS,
     WEBHOOK_MAX_RETRIES,
     WEBHOOK_RETRY_BACKOFF_MS,
     WEBHOOK_TIMEOUT_MS,
