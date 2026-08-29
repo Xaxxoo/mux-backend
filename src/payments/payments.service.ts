@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Optional,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -29,6 +30,11 @@ import { RequestContextService } from '../common/request-context/request-context
 import { PaymentMetricsService } from './payment-metrics.service';
 import { StructuredLogger } from '../common/logging/structured-logger';
 import { PaymentStatusHistoryService } from './payment-status-history.service';
+import { TransactionsService } from '../transactions/transactions.service';
+import { TransactionStatus } from '../transactions/domain/transaction.model';
+import { AssetType } from '../balance-indexer/domain/balance.model';
+import { StellarTransactionBuildService } from '../transactions/stellar-transaction-build.service';
+import { HorizonSubmissionService } from '../transactions/horizon-submission.service';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
 const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
@@ -52,6 +58,9 @@ export class PaymentsService {
     private readonly paymentMetrics: PaymentMetricsService,
     private readonly configService: ConfigService,
     private readonly statusHistory: PaymentStatusHistoryService,
+    @Optional() private readonly transactionsService?: TransactionsService,
+    @Optional() private readonly transactionBuildService?: StellarTransactionBuildService,
+    @Optional() private readonly horizonSubmissionService?: HorizonSubmissionService,
   ) {}
 
   /**
@@ -87,6 +96,14 @@ export class PaymentsService {
   }
 
   async create(createPaymentDto: CreatePaymentDto) {
+    if (
+      process.env.NODE_ENV === 'production' &&
+      (!this.transactionsService ||
+        !this.transactionBuildService ||
+        !this.horizonSubmissionService)
+    ) {
+      throw new Error('Payment transaction orchestration is not configured');
+    }
     const requestId = this.requestContext.getRequestId();
     const clientVersion = this.requestContext.getClientVersion();
     const start = Date.now();
@@ -138,8 +155,43 @@ export class PaymentsService {
           userId: fromId,
           status: PaymentStatus.PENDING,
           idempotencyKey: idempotencyKey ?? null,
+          senderWalletId: createPaymentDto.walletId,
+          receiverWalletId: createPaymentDto.receiverWalletId,
         },
       });
+
+      let transaction: any;
+      if (this.transactionsService && this.transactionBuildService && this.horizonSubmissionService) {
+        transaction = await this.transactionsService.create({
+          amount: String(amount),
+          asset: {
+            type: currency.toUpperCase() === 'XLM' ? AssetType.NATIVE : AssetType.CREDIT_ALPHANUM4,
+            ...(currency.toUpperCase() !== 'XLM' ? { code: assetCode ?? currency } : {}),
+          },
+          senderWalletId: createPaymentDto.walletId,
+          receiverWalletId: createPaymentDto.receiverWalletId,
+          metadata: { legacyPaymentId: payment.id, description },
+          idempotencyKey: idempotencyKey ? `payment:${idempotencyKey}` : undefined,
+        });
+        const sender = await this.walletsService.findWalletById(createPaymentDto.walletId);
+        const receiver = await this.walletsService.findWalletById(createPaymentDto.receiverWalletId);
+        const built = await this.transactionBuildService.buildPayment({
+          sourcePublicKey: sender.publicKey,
+          destinationPublicKey: receiver.publicKey,
+          amount: String(amount),
+          assetCode: currency.toUpperCase() === 'XLM' ? 'native' : (assetCode ?? currency),
+          network: sender.network,
+        });
+        const signedXdr = await this.walletsService.signStellarEnvelope(createPaymentDto.walletId, built.xdr);
+        const submission = await this.horizonSubmissionService.submitTransaction(transaction.id, signedXdr);
+        await this.prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            transactionId: transaction.id,
+            status: submission.status === TransactionStatus.FAILED ? PaymentStatus.FAILED : PaymentStatus.CONFIRMED,
+          },
+        });
+      }
 
       this.metrics.incrementPaymentsCreated();
       this.paymentMetrics.record({

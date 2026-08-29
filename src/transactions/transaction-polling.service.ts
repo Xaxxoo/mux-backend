@@ -2,13 +2,17 @@ import {
   Injectable,
   Logger,
   Optional,
+  OnModuleInit,
+  OnModuleDestroy,
   ServiceUnavailableException,
   BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { randomUUID } from 'crypto';
 import { AxiosError } from 'axios';
 import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
 import { PrismaService } from '../prisma/prisma.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { TransactionsService } from './transactions.service';
 import { TransactionStatus } from './domain/transaction.model';
 import {
@@ -24,10 +28,15 @@ export interface PollingResult {
 }
 
 @Injectable()
-export class TransactionPollingService {
+export class TransactionPollingService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(TransactionPollingService.name);
   private readonly horizonUrl: string;
   private readonly http = createRequestIdAwareAxios();
+  private readonly pollIntervalMs: number;
+  private pollTimer: NodeJS.Timeout | null = null;
+  private running = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -38,6 +47,51 @@ export class TransactionPollingService {
       'STELLAR_HORIZON_URL',
       'https://horizon-testnet.stellar.org',
     );
+    this.pollIntervalMs = this.configService.get<number>(
+      'TRANSACTION_POLL_INTERVAL_MS',
+      60_000,
+    );
+  }
+
+  onModuleInit(): void {
+    this.pollTimer = setInterval(() => {
+      this.runScheduledPoll().catch((err) => {
+        this.logger.error('Scheduled transaction poll failed', err);
+      });
+    }, this.pollIntervalMs);
+    this.logger.log(
+      `Transaction polling scheduler started (interval: ${this.pollIntervalMs}ms)`,
+    );
+  }
+
+  onModuleDestroy(): void {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.logger.log('Transaction polling scheduler stopped');
+  }
+
+  /**
+   * Scheduled worker that polls pending transactions. Guards against
+   * overlapping ticks and tags each run with a cron request id so logs and
+   * downstream calls carry traceable context.
+   */
+  private async runScheduledPoll(): Promise<void> {
+    if (this.running) {
+      this.logger.warn('Transaction poll already running, skipping tick');
+      return;
+    }
+
+    this.running = true;
+    try {
+      const cronRequestId = `cron-${randomUUID()}`;
+      await RequestContextService.run({ requestId: cronRequestId }, () =>
+        this.pollPendingTransactions(),
+      );
+    } finally {
+      this.running = false;
+    }
   }
 
   /**

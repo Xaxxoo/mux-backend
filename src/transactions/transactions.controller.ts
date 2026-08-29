@@ -24,11 +24,13 @@ import { TransactionQueryService } from './transaction-query.service';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { HorizonSubmissionService } from './horizon-submission.service';
 import { FeeBumpService } from './fee-bump.service';
+import { SorobanService } from './soroban.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import { BuildTransactionDto } from './dto/build-transaction.dto';
 import { SubmitTransactionDto } from './dto/submit-transaction.dto';
 import { FeeBumpTransactionDto } from './dto/fee-bump-transaction.dto';
+import { SorobanInvokeDto } from './dto/soroban-invoke.dto';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
@@ -85,6 +87,7 @@ export class TransactionsController {
     private readonly stellarBuildService: StellarTransactionBuildService,
     private readonly horizonSubmissionService: HorizonSubmissionService,
     private readonly feeBumpService: FeeBumpService,
+    private readonly sorobanService: SorobanService,
   ) {}
 
   /**
@@ -204,6 +207,22 @@ export class TransactionsController {
   @SensitiveEndpoint()
   submitFeeBump(@Body() dto: FeeBumpTransactionDto) {
     return this.feeBumpService.submitFeeBump(dto);
+  }
+
+  @ApiOperation({ summary: 'Invoke a Soroban smart contract method' })
+  @ApiResponse({
+    status: 201,
+    description: 'Soroban invocation submitted and confirmed',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid invocation parameters or simulation failure',
+  })
+  @ApiResponse({ status: 503, description: 'Soroban RPC unavailable' })
+  @Post('soroban/invoke')
+  @SensitiveEndpoint()
+  invokeSorobanContract(@Body() dto: SorobanInvokeDto) {
+    return this.sorobanService.invokeContract(dto);
   }
 
   @ApiOperation({ summary: 'Create a new transaction' })

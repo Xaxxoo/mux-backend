@@ -176,6 +176,11 @@ Both fields together allow traversal of the full rotation history in either dire
 - Only `ACTIVE` or `ROTATING` wallets can be rotated.
 - A wallet that already has a `successorId` cannot be rotated again (prevents double-rotation).
 - All DB writes (create successor + update predecessor) are atomic via `prisma.$transaction`.
+- The `/internal/key-management/rotate` route is gated by `FeatureFlagGuard` **and**
+  `InternalServiceGuard` (`x-internal-api-key` header, issue #690).
+- `KeyManagementService.rotateKey` is the **only** rotation implementation.
+  `WalletsService.rotateWalletKey` delegates to it (issue #692) and rotation is
+  never exposed on the public `/v1/wallets` API (issue #691).
 
 ### Wallet status lifecycle
 

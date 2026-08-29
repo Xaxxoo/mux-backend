@@ -77,6 +77,7 @@ describe('WalletsService', () => {
     generateKey: jest.Mock;
     sign: jest.Mock;
     validateKey: jest.Mock;
+    rotateKey: jest.Mock;
   };
   let webhookEventEmitter: {
     emitWalletCreated: jest.Mock;
@@ -110,6 +111,7 @@ describe('WalletsService', () => {
       }),
       sign: jest.fn(),
       validateKey: jest.fn(),
+      rotateKey: jest.fn(),
     };
     webhookEventEmitter = {
       emitWalletCreated: jest.fn().mockResolvedValue(undefined),
@@ -370,51 +372,74 @@ describe('WalletsService', () => {
     });
   });
 
-  describe('rotateWalletKey', () => {
-    it('should rotate wallet key successfully', async () => {
-      const existingWallet = {
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'old-public-key',
-        encryptedSecret: 'old-encrypted-secret',
-        secretVersion: 1,
-        keyVersion: 1,
-      };
+  describe('rotateWalletKey (#692 successor model)', () => {
+    const predecessorRecord = {
+      id: 'wallet-123',
+      userId: 'user-123',
+      publicKey: 'old-public-key',
+      encryptedSecret: 'old-encrypted-secret',
+      secretVersion: 1,
+      keyVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'ROTATING',
+      encryptionVersion: 1,
+      statusReason: 'Key rotation initiated',
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      successorId: 'wallet-456',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
 
-      const updatedWallet = {
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'new-public-key',
-        encryptedSecret: 'new-encrypted-secret',
-        secretVersion: 2,
-        keyVersion: 2,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+    const successorRecord = {
+      id: 'wallet-456',
+      userId: 'user-123',
+      publicKey: 'new-public-key',
+      encryptedSecret: 'new-encrypted-secret',
+      secretVersion: 2,
+      keyVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: 'ACTIVE',
+      encryptionVersion: 1,
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: 'wallet-123',
+      successorId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
 
-      mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
-      mockPrismaWallet.update.mockResolvedValue(updatedWallet);
-      jest
-        .spyOn(encryptionService, 'deserializeAndDecrypt')
-        .mockReturnValue('new-private-key');
+    it('delegates to KeyManagementService.rotateKey and returns predecessor + successor', async () => {
+      mockPrismaWallet.findUnique.mockImplementation(
+        ({ where: { id } }: { where: { id: string } }) => {
+          if (id === 'wallet-123') return Promise.resolve(predecessorRecord);
+          if (id === 'wallet-456') return Promise.resolve(successorRecord);
+          return Promise.resolve(null);
+        },
+      );
+      keyManagementService.rotateKey.mockResolvedValue({
+        predecessorWalletId: 'wallet-123',
+        successorWalletId: 'wallet-456',
+        successorPublicKey: 'new-public-key',
+        successorKeyVersion: 1,
+      });
 
       const result = await service.rotateWalletKey('wallet-123');
 
-      expect(result.wallet.id).toBe('wallet-123');
-      expect(result.wallet.secretVersion).toBe(2);
-      expect(result.privateKey).toBe('new-private-key');
-      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { walletId: 'wallet-123', operation: 'rotation' },
-      });
+      expect(keyManagementService.rotateKey).toHaveBeenCalledWith('wallet-123');
+      expect(keyManagementService.generateKey).not.toHaveBeenCalled();
+      expect(mockPrismaWallet.update).not.toHaveBeenCalled();
+      expect(result.successor.id).toBe('wallet-456');
+      expect(result.successor.publicKey).toBe('new-public-key');
+      expect(result.predecessor.id).toBe('wallet-123');
+      expect(result.predecessor.status).toBe('ROTATING');
+      // Key material is never returned
+      expect(result.successor).not.toHaveProperty('encryptedSecret');
+      expect(result as unknown as Record<string, unknown>).not.toHaveProperty(
+        'privateKey',
+      );
       expect(webhookEventEmitter.emitWalletRotated).toHaveBeenCalledWith({
-        walletId: 'wallet-123',
+        walletId: 'wallet-456',
         userId: 'user-123',
         publicKey: 'new-public-key',
         network: WalletNetwork.TESTNET,
@@ -428,6 +453,7 @@ describe('WalletsService', () => {
       await expect(service.rotateWalletKey('non-existent')).rejects.toThrow(
         'Wallet with ID non-existent not found',
       );
+      expect(keyManagementService.rotateKey).not.toHaveBeenCalled();
     });
   });
 

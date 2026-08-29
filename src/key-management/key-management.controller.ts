@@ -20,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 import { KeyManagementService } from './key-management.service';
 import type { GenerateKeyRequest, SignRequest } from './key-management.service';
+import { EncryptionMigrationService } from './encryption-migration.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
 import {
@@ -31,6 +32,7 @@ import {
   FeatureFlagGuard,
   FeatureFlag,
 } from '../common/feature-flags/feature-flag.guard';
+import { InternalServiceGuard } from './guards/internal-service.guard';
 
 function parsePaginationParam(
   value: string | undefined,
@@ -60,22 +62,52 @@ function parseDate(value: string | undefined, name: string): Date | undefined {
 /**
  * Internal controller for key management operations
  *
- * WARNING: This should be internal-only and NOT exposed to public APIs.
- * All endpoints should be protected by network policy or a separate internal
- * API key guard before reaching production.
+ * INTERNAL-ONLY. These endpoints custody Stellar private keys and must never be
+ * reachable from the public internet.
  *
- * Feature-flag gate: set `FEATURE_KEY_MANAGEMENT_API=true` to enable.
- * When the flag is absent or false every endpoint returns HTTP 403.
+ * Two independent gates protect every route:
+ *  1. Feature-flag gate (`FeatureFlagGuard`): set `FEATURE_KEY_MANAGEMENT_API=true`
+ *     to enable the API at all. When the flag is absent or false every endpoint
+ *     returns HTTP 403.
+ *  2. Internal-service gate (`InternalServiceGuard`, issue #690): callers must
+ *     present the shared secret in the `x-internal-api-key` header, matched
+ *     against `KEY_MANAGEMENT_INTERNAL_API_KEY`. Requests fail closed (503) when
+ *     the secret is not configured and 401 when it is missing or wrong.
+ *
+ * These application-layer gates complement — they do not replace — network
+ * policy / service-mesh restrictions that should also front this controller in
+ * production.
  */
 @ApiTags('internal/key-management')
 @Controller('internal/key-management')
 @FeatureFlag('key_management_api')
-@UseGuards(FeatureFlagGuard)
+@UseGuards(FeatureFlagGuard, InternalServiceGuard)
 export class KeyManagementController {
   constructor(
     private readonly keyManagementService: KeyManagementService,
     private readonly auditService: KeyRotationAuditService,
+    private readonly encryptionMigrationService: EncryptionMigrationService,
   ) {}
+
+  /**
+   * Upgrades stored ciphertext for wallets on an outdated encryption
+   * envelope version (internal use only).
+   */
+  @ApiOperation({
+    summary: 'Migrate wallets to the current encryption envelope version',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Migration batch result: scanned, migrated, and failed counts.',
+  })
+  @Post('migrate-encryption-version')
+  @HttpCode(HttpStatus.OK)
+  async migrateEncryptionVersion(@Query('batchSize') batchSize?: string) {
+    const parsedBatchSize = parsePaginationParam(batchSize, 'batchSize', 500);
+    return this.encryptionMigrationService.migrateEncryptionVersions(
+      parsedBatchSize,
+    );
+  }
 
   /**
    * Generates a new key (internal use only)

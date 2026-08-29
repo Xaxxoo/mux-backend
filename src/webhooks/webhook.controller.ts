@@ -33,6 +33,7 @@ import {
   TenantScopeGuard,
   TenantScoped,
 } from '../common/guards/tenant-scope.guard';
+import { WebhookSignatureGuard } from './webhook-signature.guard';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
@@ -806,4 +807,34 @@ export class WebhookController {
     return this.dlqAlertService.getDlqDepth();
   }
 
+  // ---------------------------------------------------------------------------
+  // POST /webhooks/inbound
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Receive inbound webhook',
+    description:
+      'Receives and verifies an inbound webhook notification signed with HMAC-SHA256.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Webhook received and processed successfully',
+    schema: {
+      example: {
+        received: true,
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid webhook signature',
+  })
+  @UseGuards(WebhookSignatureGuard)
+  @Post('inbound')
+  @HttpCode(HttpStatus.OK)
+  async receiveInboundWebhook(@Body() body: unknown) {
+    return {
+      received: true,
+    };
+  }
 }

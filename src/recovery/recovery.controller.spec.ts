@@ -3,6 +3,7 @@ import { RecoveryController } from './recovery.controller';
 import { RecoveryService } from './recovery.service';
 import { RecoveryStatus } from './domain/recovery.model';
 import { BadRequestException } from '@nestjs/common';
+import { AdminRecoveryService } from './admin-recovery.service';
 
 describe('RecoveryController', () => {
   let controller: RecoveryController;
@@ -43,6 +44,7 @@ describe('RecoveryController', () => {
           provide: RecoveryService,
           useValue: service,
         },
+        { provide: AdminRecoveryService, useValue: {} },
       ],
     }).compile();
 

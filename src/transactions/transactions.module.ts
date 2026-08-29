@@ -10,6 +10,8 @@ import { TransactionPollingService } from './transaction-polling.service';
 import { TransactionExportService } from './transaction-export.service';
 import { TransactionExportController } from './transaction-export.controller';
 import { FeeBumpService } from './fee-bump.service';
+import { SorobanService } from './soroban.service';
+import { RelayerFundingService } from './relayer-funding.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
 import { WebhookModule } from '../webhooks/webhook.module';
@@ -33,6 +35,8 @@ import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
     StellarTransactionBuildService,
     HorizonSubmissionService,
     FeeBumpService,
+    SorobanService,
+    RelayerFundingService,
     CacheService,
     FeatureFlagService,
     TransactionMetricsService,
@@ -45,6 +49,7 @@ import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
     TransactionsService,
     TransactionQueryService,
     StellarTransactionBuildService,
+    HorizonSubmissionService,
     TransactionPollingService,
     TransactionExportService,
     FeeBumpService,

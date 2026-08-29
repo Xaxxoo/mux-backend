@@ -7,6 +7,7 @@ import { EncryptionModule } from '../encryption/encryption.module';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
+import { EncryptionMigrationService } from './encryption-migration.service';
 
 @Module({
   imports: [EncryptionModule, PrismaModule, EventEmitterModule.forRoot()],
@@ -16,6 +17,7 @@ import { KeyManagementMetricsService } from './key-management-metrics.service';
     StellarKeyProvider,
     KeyRotationAuditService,
     KeyManagementMetricsService,
+    EncryptionMigrationService,
     makeCounterProvider({
       name: 'key_mgmt_operations_total',
       help: 'Total number of key management operations by type and status',
