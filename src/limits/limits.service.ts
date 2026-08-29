@@ -49,6 +49,40 @@ export class LimitsService {
     private readonly requestContext: RequestContextService,
   ) {}
 
+  private async getDailyUsageTotal(
+    walletId: string,
+    startOfDay: Date,
+  ): Promise<number> {
+    const txns = await retryWithBackoff(
+      () =>
+        this.prisma.transaction.findMany({
+          where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+          select: { amount: true },
+        }),
+      3,
+      100,
+      this.logger,
+    );
+
+    const paymentRows = this.prisma.payment?.findMany
+      ? await retryWithBackoff(
+          () =>
+            this.prisma.payment.findMany({
+              where: { createdAt: { gte: startOfDay } },
+              select: { amount: true },
+            }),
+          3,
+          100,
+          this.logger,
+        )
+      : [];
+
+    return (
+      txns.reduce((sum, t) => sum + Number(t.amount || 0), 0) +
+      paymentRows.reduce((sum, p) => sum + Number(p.amount || 0), 0)
+    );
+  }
+
   async setLimits(walletId: string, daily: number, perTx: number) {
     // Read-then-write is wrapped in a single Prisma transaction so a
     // concurrent setLimits call for the same wallet can't interleave
@@ -144,26 +178,13 @@ export class LimitsService {
       perTransactionLimit: limit.perTransactionLimit,
     };
 
-    // Calculate remaining daily limit if a positive daily limit is configured
+    // Calculate remaining daily limit if a positive daily limit is configured.
+    // Daily usage includes both wallet transactions and payment rows created by the payments API.
     if (limit.dailyLimit > 0) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
 
-      const txns = await retryWithBackoff(
-        () =>
-          this.prisma.transaction.findMany({
-            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
-            select: { amount: true },
-          }),
-        3,
-        100,
-        this.logger,
-      );
-
-      const currentDailyTotal = txns.reduce(
-        (sum, t) => sum + Number(t.amount),
-        0,
-      );
+      const currentDailyTotal = await this.getDailyUsageTotal(walletId, startOfDay);
       response.remainingDailyLimit = Math.max(
         0,
         limit.dailyLimit - currentDailyTotal,
@@ -224,26 +245,13 @@ export class LimitsService {
       );
     }
 
-    // Enforce daily cap only when a positive daily limit is configured
+    // Enforce daily cap only when a positive daily limit is configured.
+    // Total usage includes wallet transactions and payment API rows created today.
     if (limits.dailyLimit > 0) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
 
-      const txns = await retryWithBackoff(
-        () =>
-          this.prisma.transaction.findMany({
-            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
-            select: { amount: true },
-          }),
-        3,
-        100,
-        this.logger,
-      );
-
-      const currentDailyTotal = txns.reduce(
-        (sum, t) => sum + Number(t.amount),
-        0,
-      );
+      const currentDailyTotal = await this.getDailyUsageTotal(walletId, startOfDay);
       if (currentDailyTotal + amount > limits.dailyLimit) {
         this.metrics.incrementLimitExceeded('daily');
         this.metrics.incrementLimitChecks('denied');

@@ -58,14 +58,16 @@ const MAX_DOWNLOAD_LINK_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Signing secret for the download token.
- * In production this should come from an environment variable (EXPORT_SIGNING_SECRET).
- * We fall back to a deterministic but unguessable derived key in development.
+ * Must be configured explicitly; we fail closed rather than silently using a default secret.
  */
 function getSigningSecret(): string {
-  return (
-    process.env.EXPORT_SIGNING_SECRET ||
-    'mux-export-signing-secret-change-in-production'
-  );
+  const secret = process.env.EXPORT_SIGNING_SECRET?.trim();
+  if (!secret) {
+    throw new Error(
+      'EXPORT_SIGNING_SECRET is required to sign export download tokens',
+    );
+  }
+  return secret;
 }
 
 /**
