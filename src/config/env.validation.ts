@@ -22,6 +22,7 @@ export interface ValidatedEnv {
   PORT: number;
   JSON_BODY_LIMIT_BYTES: number;
   MAINTENANCE_ADMIN_SECRET: string;
+  CRON_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
   BALANCE_STALE_THRESHOLD_MS: number;
@@ -29,6 +30,8 @@ export interface ValidatedEnv {
   WEBHOOK_RETRY_BACKOFF_MS: number;
   WEBHOOK_TIMEOUT_MS: number;
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: number;
+  WEBHOOK_QUEUE_INTERVAL_MS: number;
+  WEBHOOK_INBOUND_SECRET: string;
   AUTH_RATE_LIMIT_MAX: number;
   AUTH_RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_WINDOW_MS: number;
@@ -209,6 +212,16 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   );
   const MAINTENANCE_ADMIN_SECRET =
     env.MAINTENANCE_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_SECRET =
+    process.env.NODE_ENV === 'production'
+      ? requireMinLength(env, 'RECOVERY_ADMIN_SECRET', 32, violations)
+      : env.RECOVERY_ADMIN_SECRET?.trim() ?? '';
+  const RECOVERY_ADMIN_DEV_BYPASS = optionalBoolean(
+    env,
+    'RECOVERY_ADMIN_DEV_BYPASS',
+    false,
+    violations,
+  );
 
   // ── Optional numeric fields ───────────────────────────────────────────────
   const PORT = optionalInt(env, 'PORT', 3000, { min: 1, max: 65535 }, violations);
@@ -254,6 +267,15 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 1 },
     violations,
   );
+  const WEBHOOK_QUEUE_INTERVAL_MS = optionalInt(
+    env,
+    'WEBHOOK_QUEUE_INTERVAL_MS',
+    30_000,
+    { min: 100 },
+    violations,
+  );
+  const WEBHOOK_INBOUND_SECRET =
+    env.WEBHOOK_INBOUND_SECRET?.trim() ?? '';
   const AUTH_RATE_LIMIT_MAX = optionalInt(
     env,
     'AUTH_RATE_LIMIT_MAX',
@@ -353,6 +375,26 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     }
   }
 
+  // ── Cron / internal endpoints ─────────────────────────────────────────────
+  const CRON_SECRET = env.CRON_SECRET?.trim() ?? '';
+
+  // In production, fail closed: internal cron endpoints rely on CRON_SECRET
+  // (X-Cron-Secret header guard), so the server must not start without it.
+  if (process.env.NODE_ENV === 'production') {
+    if (!CRON_SECRET) {
+      violations.push({
+        variable: 'CRON_SECRET',
+        message: 'CRON_SECRET is required in production',
+      });
+    } else if (CRON_SECRET.length < 16) {
+      violations.push({
+        variable: 'CRON_SECRET',
+        message:
+          'CRON_SECRET must be at least 16 characters long in production',
+      });
+    }
+  }
+
   // ── OpenTelemetry / Tracing ────────────────────────────────────────────────
   const OTEL_ENABLED = optionalBoolean(env, 'OTEL_ENABLED', false, violations);
 
@@ -420,6 +462,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     PORT,
     JSON_BODY_LIMIT_BYTES,
     MAINTENANCE_ADMIN_SECRET,
+    CRON_SECRET,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
     BALANCE_STALE_THRESHOLD_MS,
@@ -427,6 +470,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     WEBHOOK_RETRY_BACKOFF_MS,
     WEBHOOK_TIMEOUT_MS,
     WEBHOOK_MAX_CONSECUTIVE_FAILURES,
+    WEBHOOK_QUEUE_INTERVAL_MS,
+    WEBHOOK_INBOUND_SECRET,
     AUTH_RATE_LIMIT_MAX,
     AUTH_RATE_LIMIT_WINDOW_MS,
     RATE_LIMIT_WINDOW_MS,

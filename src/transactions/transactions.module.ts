@@ -49,6 +49,7 @@ import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
     TransactionsService,
     TransactionQueryService,
     StellarTransactionBuildService,
+    HorizonSubmissionService,
     TransactionPollingService,
     TransactionExportService,
     FeeBumpService,

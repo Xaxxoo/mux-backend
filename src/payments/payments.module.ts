@@ -11,9 +11,10 @@ import { RequestContextService } from '../common/request-context/request-context
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { PaymentMetricsService } from './payment-metrics.service';
+import { TransactionsModule } from '../transactions/transactions.module';
 
 @Module({
-  imports: [ConfigModule, LimitsModule, WalletsModule],
+  imports: [ConfigModule, LimitsModule, WalletsModule, TransactionsModule],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,

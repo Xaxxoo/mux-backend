@@ -36,14 +36,19 @@ model Payment {
   status      PaymentStatus @default(PENDING)
   description String?
 
-  fromId Int
-  from   LegacyUser @relation("SentPayments", fields: [fromId], references: [id])
+  fromId Int?
+  from   LegacyUser? @relation("SentPayments", fields: [fromId], references: [id])
 
-  toId Int
-  to   LegacyUser @relation("ReceivedPayments", fields: [toId], references: [id])
+  toId Int?
+  to   LegacyUser? @relation("ReceivedPayments", fields: [toId], references: [id])
 
-  userId Int // Legacy field
-  user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
+  userId Int? // Legacy compatibility field
+  user   LegacyUser? @relation("UserPayments", fields: [userId], references: [id])
+
+  /// UUID wallet identity; retained alongside legacy IDs during migration.
+  senderWalletId   String?
+  receiverWalletId String?
+  transactionId    String? @unique
 
   /// Client-supplied idempotency key to prevent duplicate submissions
   idempotencyKey String? @unique
