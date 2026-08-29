@@ -25,6 +25,7 @@ export interface ValidatedEnv {
   CRON_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
   STELLAR_HORIZON_URL: string;
+  STELLAR_HORIZON_MAX_RETRIES: number;
   BALANCE_STALE_THRESHOLD_MS: number;
   WEBHOOK_MAX_RETRIES: number;
   WEBHOOK_RETRY_BACKOFF_MS: number;
@@ -232,6 +233,13 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 1, max: 10_485_760 },
     violations,
   );
+  const STELLAR_HORIZON_MAX_RETRIES = optionalInt(
+    env,
+    'STELLAR_HORIZON_MAX_RETRIES',
+    3,
+    { min: 0, max: 100 },
+    violations,
+  );
   const BALANCE_STALE_THRESHOLD_MS = optionalInt(
     env,
     'BALANCE_STALE_THRESHOLD_MS',
@@ -353,6 +361,13 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
 
   // In production, fail closed if identity provider not configured
   if (process.env.NODE_ENV === 'production') {
+    if (!MAINTENANCE_ADMIN_SECRET) {
+      violations.push({
+        variable: 'MAINTENANCE_ADMIN_SECRET',
+        message: 'MAINTENANCE_ADMIN_SECRET is required in production (remote maintenance-mode toggling must not be silently disabled)',
+      });
+    }
+
     if (!AUTH_IDENTITY_PROVIDER) {
       violations.push({
         variable: 'AUTH_IDENTITY_PROVIDER',
@@ -465,6 +480,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     CRON_SECRET,
     WALLET_ENCRYPTION_KEY,
     STELLAR_HORIZON_URL,
+    STELLAR_HORIZON_MAX_RETRIES,
     BALANCE_STALE_THRESHOLD_MS,
     WEBHOOK_MAX_RETRIES,
     WEBHOOK_RETRY_BACKOFF_MS,
