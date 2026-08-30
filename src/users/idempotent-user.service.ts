@@ -43,6 +43,7 @@ export interface SessionListOptions {
   authProvider?: string;
   dateFrom?: Date;
   dateTo?: Date;
+  userId?: string;
 }
 
 export interface SessionListResult {
@@ -177,14 +178,16 @@ export class IdempotentUserService {
 
   /**
    * Lists authenticated sessions (users with lastLoginAt) with optional filters.
+   * If userId is provided, scopes results to only that user's session (self-scoped).
    * Filters: status, authProvider, dateFrom/dateTo against lastLoginAt.
    * Results are ordered by lastLoginAt descending, with pagination.
    */
   async listSessions(options: SessionListOptions = {}): Promise<SessionListResult> {
-    const { page = 1, status, authProvider, dateFrom, dateTo } = options;
+    const { page = 1, status, authProvider, dateFrom, dateTo, userId } = options;
     const limit = Math.min(options.limit ?? 20, 100);
 
     const where: Record<string, any> = { deletedAt: null };
+    if (userId) where.id = userId;
     if (status) where.status = status;
     if (authProvider) where.authProvider = authProvider;
     if (dateFrom || dateTo) {

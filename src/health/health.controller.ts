@@ -1,47 +1,41 @@
 import { Controller, Get } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/public.decorator';
 
-export interface HealthPayload {
-  status: 'ok';
-  network: string;
-  timestamp: string;
-}
-
+@ApiTags('health')
 @Controller('health')
 export class HealthController {
   constructor(private readonly configService: ConfigService) {}
 
-  @Get()
   @Public()
-  getHealth(): HealthPayload {
+  @Get()
+  @ApiOperation({
+    summary: 'Liveness probe for Kubernetes/container orchestration (no external dependencies)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Service is alive and responsive',
+    schema: {
+      example: {
+        status: 'ok',
+        build: { gitSha: 'a1b2c3d4e5f6' },
+      },
+    },
+  })
+  check(): { status: string; build: { gitSha: string } } {
     return {
       status: 'ok',
-      network: this.configService.get<string>('STELLAR_NETWORK', 'TESTNET'),
-      timestamp: new Date().toISOString(),
+      build: { gitSha: this.getGitSha() },
     };
-import {
-  HealthCheck,
-  HealthCheckService,
-  PrismaHealthIndicator,
-} from '@nestjs/terminus';
-import { PrismaService } from '../prisma/prisma.service';
-import { Public } from '../auth/public.decorator';
+  }
 
-@Controller('health')
-export class HealthController {
-  constructor(
-    private readonly health: HealthCheckService,
-    private readonly prismaIndicator: PrismaHealthIndicator,
-    private readonly prisma: PrismaService,
-  ) {}
-
-  @Public()
-  @Get()
-  @HealthCheck()
-  check() {
-    return this.health.check([
-      () => this.prismaIndicator.pingCheck('database', this.prisma),
-    ]);
+  /**
+   * Git SHA of the running build, injected at container build time via the
+   * GIT_SHA env var (see Dockerfile). Never sourced from anything that could
+   * leak secrets — just a commit hash.
+   */
+  private getGitSha(): string {
+    return this.configService.get<string>('GIT_SHA', 'unknown');
   }
 }

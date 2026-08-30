@@ -7,6 +7,9 @@ import { WalletsService } from '../wallets/wallets.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import { PaymentMetricsService } from './payment-metrics.service';
+import { ConfigService } from '@nestjs/config';
+import { PaymentStatusHistoryService } from './payment-status-history.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
@@ -38,7 +41,9 @@ describe('PaymentsService', () => {
   let eventEmitter: any;
   let metrics: any;
   let requestContext: any;
-  let webhookEventEmitter: any;
+  let paymentMetrics: any;
+  let configService: any;
+  let statusHistory: any;
 
   beforeEach(async () => {
     prisma = {
@@ -59,11 +64,9 @@ describe('PaymentsService', () => {
       recordPaymentProcessingDuration: jest.fn(),
       incrementPaymentIdempotencyHit: jest.fn(),
     };
-    requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
-    webhookEventEmitter = {
-      emitPaymentCreated: jest.fn().mockResolvedValue(undefined),
-      emitPaymentCompleted: jest.fn().mockResolvedValue(undefined),
-      emitPaymentFailed: jest.fn().mockResolvedValue(undefined),
+    requestContext = {
+      getRequestId: jest.fn().mockReturnValue('req-1'),
+      getClientVersion: jest.fn().mockReturnValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -75,10 +78,9 @@ describe('PaymentsService', () => {
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
         { provide: RequestContextService, useValue: requestContext },
-        {
-          provide: WebhookEventEmitterService,
-          useValue: webhookEventEmitter as WebhookEventEmitterService,
-        },
+        { provide: PaymentMetricsService, useValue: paymentMetrics },
+        { provide: ConfigService, useValue: configService },
+        { provide: PaymentStatusHistoryService, useValue: statusHistory },
       ],
     }).compile();
 
@@ -87,6 +89,84 @@ describe('PaymentsService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('dryRun', () => {
+    it('validates the payment and returns a sanitized preview without side effects', async () => {
+      const secret = 'SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+      walletsService.findWalletById
+        .mockResolvedValueOnce({
+          ...ACTIVE_WALLET,
+          encryptedSecret: 'encrypted-wallet-secret',
+          privateKey: secret,
+        })
+        .mockResolvedValueOnce({
+          ...RECEIVER_WALLET,
+          encryptedSecret: 'encrypted-receiver-secret',
+        });
+      paymentLimitsPort.checkLimits.mockResolvedValue(undefined);
+
+      const result = await service.dryRun(BASE_DTO);
+
+      expect(result).toEqual({
+        dryRun: true,
+        valid: true,
+        preview: {
+          senderWalletId: BASE_DTO.walletId,
+          receiverWalletId: BASE_DTO.receiverWalletId,
+          fromId: BASE_DTO.fromId,
+          toId: BASE_DTO.toId,
+          amount: BASE_DTO.amount,
+          currency: BASE_DTO.currency,
+          status: PaymentStatus.PENDING,
+        },
+        checks: {
+          senderWallet: 'ACTIVE',
+          receiverWallet: 'FOUND',
+          paymentLimits: 'PASSED',
+        },
+      });
+      expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
+        BASE_DTO.walletId,
+        BASE_DTO.amount,
+      );
+      expect(prisma.payment.findUnique).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).not.toContain('encrypted-wallet-secret');
+    });
+
+    it('rejects an inactive sender without persisting a payment', async () => {
+      walletsService.findWalletById.mockResolvedValue({
+        ...ACTIVE_WALLET,
+        status: WalletStatus.SUSPENDED,
+      });
+
+      await expect(service.dryRun(BASE_DTO)).rejects.toThrow(
+        new BadRequestException(
+          'Sender wallet is not active (status: SUSPENDED)',
+        ),
+      );
+      expect(paymentLimitsPort.checkLimits).not.toHaveBeenCalled();
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('propagates payment-limit failures without persistence', async () => {
+      walletsService.findWalletById
+        .mockResolvedValueOnce(ACTIVE_WALLET)
+        .mockResolvedValueOnce(RECEIVER_WALLET);
+      paymentLimitsPort.checkLimits.mockRejectedValue(
+        new BadRequestException('Payment limit exceeded'),
+      );
+
+      await expect(service.dryRun(BASE_DTO)).rejects.toThrow(
+        'Payment limit exceeded',
+      );
+      expect(prisma.payment.create).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    });
   });
 
   describe('create', () => {
@@ -298,6 +378,58 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('client version propagation (support logs)', () => {
+    it('includes the client version in the update log context when the header was present', async () => {
+      requestContext.getClientVersion.mockReturnValue('2.4.1');
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+      const logSpy = jest.spyOn(
+        (service as any).logger,
+        'logWithContext',
+      );
+
+      await service.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(requestContext.getClientVersion).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(
+        'Updating payment',
+        expect.objectContaining({ clientVersion: '2.4.1' }),
+      );
+    });
+
+    it('omits the client version from the log context without breaking the request when the header was absent', async () => {
+      requestContext.getClientVersion.mockReturnValue(undefined);
+      prisma.payment.findUnique.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.PENDING,
+      });
+      prisma.payment.update.mockResolvedValue({
+        id: 1,
+        status: PaymentStatus.CONFIRMED,
+      });
+      const logSpy = jest.spyOn(
+        (service as any).logger,
+        'logWithContext',
+      );
+
+      const result = await service.update('1', {
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      expect(result).toBeDefined();
+      expect(logSpy).toHaveBeenCalledWith(
+        'Updating payment',
+        expect.objectContaining({ clientVersion: undefined }),
+      );
+    });
+  });
+
   describe('filtering', () => {
     it('should apply status filter when provided', async () => {
       const payments = [{ id: 1, status: PaymentStatus.PENDING }];
@@ -409,7 +541,9 @@ describe('PaymentsService', () => {
 
       await service.update('1', { status: PaymentStatus.FAILED });
 
-      expect(metrics.incrementPaymentsFailed).toHaveBeenCalledWith('user_action');
+      expect(metrics.incrementPaymentsFailed).toHaveBeenCalledWith(
+        'user_action',
+      );
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'payment.failed',
         expect.any(PaymentFailedEvent),

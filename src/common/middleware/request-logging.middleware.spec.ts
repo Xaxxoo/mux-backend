@@ -1,4 +1,6 @@
-import requestLogger from './request-logging.middleware';
+import requestLogger, {
+  extractClientVersion,
+} from './request-logging.middleware';
 import { Logger } from '@nestjs/common';
 import { RequestContextService } from '../request-context/request-context.service';
 
@@ -156,5 +158,114 @@ describe('requestLogger', () => {
     expect(next).toHaveBeenCalled();
     expect(capturedRequestId).toBeDefined();
     expect(capturedRequestId).toBe(req.requestId);
+  });
+
+  describe('X-Client-Version header', () => {
+    it('extractClientVersion returns a trimmed value when the header is present and well-formed', () => {
+      const req: any = { headers: { 'x-client-version': '  2.4.1  ' } };
+      expect(extractClientVersion(req)).toBe('2.4.1');
+    });
+
+    it('extractClientVersion returns undefined when the header is absent', () => {
+      const req: any = { headers: {} };
+      expect(extractClientVersion(req)).toBeUndefined();
+    });
+
+    it('extractClientVersion returns undefined for an empty header value', () => {
+      const req: any = { headers: { 'x-client-version': '   ' } };
+      expect(extractClientVersion(req)).toBeUndefined();
+    });
+
+    it('extractClientVersion returns undefined for a malformed/unsafe header value', () => {
+      const req: any = {
+        headers: { 'x-client-version': 'bad value\nwith-newline' },
+      };
+      expect(extractClientVersion(req)).toBeUndefined();
+    });
+
+    it('extractClientVersion returns undefined for an over-long header value', () => {
+      const req: any = { headers: { 'x-client-version': 'v'.repeat(200) } };
+      expect(extractClientVersion(req)).toBeUndefined();
+    });
+
+    it('extractClientVersion handles a request with no headers object gracefully', () => {
+      const req: any = null;
+      expect(extractClientVersion(req)).toBeUndefined();
+    });
+
+    it('captures a present client version on the request and in the log context', () => {
+      const req: any = {
+        method: 'GET',
+        originalUrl: '/test',
+        headers: { 'x-client-version': '3.1.0' },
+        ip: '1.2.3.4',
+      };
+      const res: any = { setHeader: jest.fn(), on: jest.fn(), statusCode: 200 };
+
+      let capturedClientVersion: string | undefined;
+      const next = jest.fn().mockImplementation(() => {
+        const service = new RequestContextService();
+        capturedClientVersion = service.getClientVersion();
+      });
+
+      const spyLog = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => {});
+
+      requestLogger(req, res, next as any);
+
+      expect(req.clientVersion).toBe('3.1.0');
+      expect(next).toHaveBeenCalled();
+      expect(capturedClientVersion).toBe('3.1.0');
+      expect(spyLog).toHaveBeenCalledWith(
+        expect.stringContaining('clientVersion=3.1.0'),
+      );
+    });
+
+    it('omits the client version and still processes the request when the header is missing', () => {
+      const req: any = {
+        method: 'GET',
+        originalUrl: '/test',
+        headers: {},
+        ip: '1.2.3.4',
+      };
+      const res: any = { setHeader: jest.fn(), on: jest.fn(), statusCode: 200 };
+
+      let capturedClientVersion: string | undefined = 'unset';
+      const next = jest.fn().mockImplementation(() => {
+        const service = new RequestContextService();
+        capturedClientVersion = service.getClientVersion();
+      });
+
+      const spyLog = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => {});
+
+      requestLogger(req, res, next as any);
+
+      expect(req.clientVersion).toBeUndefined();
+      expect(next).toHaveBeenCalled();
+      expect(capturedClientVersion).toBeUndefined();
+      expect(spyLog).toHaveBeenCalledWith(
+        expect.not.stringContaining('clientVersion='),
+      );
+    });
+
+    it('does not break the request when the header value is malformed', () => {
+      const req: any = {
+        method: 'GET',
+        originalUrl: '/test',
+        headers: { 'x-client-version': 'not\na valid version!!' },
+        ip: '1.2.3.4',
+      };
+      const res: any = { setHeader: jest.fn(), on: jest.fn(), statusCode: 200 };
+      const next = jest.fn();
+
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => {});
+
+      expect(() => requestLogger(req, res, next as any)).not.toThrow();
+      expect(next).toHaveBeenCalled();
+      expect(req.clientVersion).toBeUndefined();
+    });
   });
 });

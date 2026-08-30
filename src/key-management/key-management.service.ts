@@ -51,6 +51,8 @@ export interface RotateKeyResult {
   successorWalletId: string;
   /** The new wallet's public key */
   successorPublicKey: string;
+  /** The key algorithm/derivation scheme version of the successor */
+  successorKeyVersion: number;
   /** The predecessor wallet ID (now marked ROTATING with successorId set) */
   predecessorWalletId: string;
 }
@@ -431,6 +433,7 @@ export class KeyManagementService {
           publicKey: keyMaterial.publicKey,
           encryptedSecret: keyMaterial.encryptedData,
           encryptionVersion: keyMaterial.encryptionVersion,
+          keyVersion: keyMaterial.keyVersion,
           secretVersion: predecessor.secretVersion + 1,
           network: predecessor.network,
           status: 'ACTIVE',
@@ -479,6 +482,7 @@ export class KeyManagementService {
     return {
       successorWalletId: successor.id,
       successorPublicKey: successor.publicKey,
+      successorKeyVersion: successor.keyVersion,
       predecessorWalletId,
     };
   }

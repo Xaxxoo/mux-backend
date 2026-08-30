@@ -22,18 +22,16 @@ describe('LimitsService', () => {
       walletLimit: {
         upsert: jest.fn(),
         findUnique: jest.fn(),
-        delete: jest.fn(),
+        update: jest.fn(),
       },
       transaction: {
         findMany: jest.fn(),
       },
-      wallet: {
-        findUnique: jest.fn().mockResolvedValue({ userId: 1 }),
-      },
-      spendingLimit: {
-        findMany: jest.fn().mockResolvedValue([]),
+      payment: {
+        findMany: jest.fn(),
       },
     };
+    prisma.$transaction = jest.fn((cb) => cb(prisma));
     eventEmitter = { emit: jest.fn() };
     metrics = {
       incrementLimitExceeded: jest.fn(),
@@ -65,29 +63,41 @@ describe('LimitsService', () => {
       await service.setLimits(walletId, 100, 10);
       expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
         where: { walletId },
-        update: { dailyLimit: 100, perTransactionLimit: 10 },
+        update: { dailyLimit: 100, perTransactionLimit: 10, deletedAt: null },
         create: { walletId, dailyLimit: 100, perTransactionLimit: 10 },
       });
     });
+
+    it('should run the existence check and upsert inside a single Prisma transaction', async () => {
+      await service.setLimits(walletId, 100, 10);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+        where: { walletId },
+      });
+    });
+
+    it('should propagate failure and emit no events if the transaction fails', async () => {
+      prisma.$transaction.mockRejectedValue(new Error('deadlock'));
+      await expect(service.setLimits(walletId, 100, 10)).rejects.toThrow(
+        'deadlock',
+      );
+      expect(eventEmitter.emit).not.toHaveBeenCalled();
+    }, 10000);
   });
 
   describe('getLimits', () => {
     it('should return limits for a wallet', async () => {
       const limit = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
       prisma.walletLimit.findUnique.mockResolvedValue(limit);
+      prisma.transaction.findMany.mockResolvedValue([]);
       const result = await service.getLimits(walletId);
-      expect(result).toEqual(limit);
+      expect(result).toEqual({ ...limit, remainingDailyLimit: 100 });
     });
 
-    it('should use the cache layer for wallet limits', async () => {
-      const limit = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
-      cacheService.get.mockReturnValue(limit);
-
+    it('should return null when no limits exist for a wallet', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue(null);
       const result = await service.getLimits(walletId);
-
-      expect(result).toEqual(limit);
-      expect(cacheService.get).toHaveBeenCalledWith(`limits:${walletId}`);
-      expect(prisma.walletLimit.findUnique).not.toHaveBeenCalled();
+      expect(result).toBeNull();
     });
   });
 
@@ -102,6 +112,7 @@ describe('LimitsService', () => {
         perTransactionLimit: 50,
         dailyLimit: 1000,
       });
+      prisma.transaction.findMany.mockResolvedValue([]);
       await expect(service.checkLimits(walletId, 100)).rejects.toBeInstanceOf(
         LimitExceededException,
       );
@@ -171,16 +182,34 @@ describe('LimitsService', () => {
       ).resolves.not.toThrow();
       expect(prisma.transaction.findMany).not.toHaveBeenCalled();
     });
+
+    it('should include payment records in the daily usage total', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 200,
+        dailyLimit: 100,
+      });
+      prisma.transaction.findMany.mockResolvedValue([{ amount: '50' }]);
+      prisma.payment.findMany.mockResolvedValue([{ amount: '30' }]);
+
+      await expect(service.checkLimits(walletId, 21)).rejects.toBeInstanceOf(
+        LimitExceededException,
+      );
+    });
   });
 
   describe('removeLimits', () => {
-    it('should delete limits for a wallet', async () => {
+    it('should soft-delete limits for a wallet', async () => {
       const limit = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
       prisma.walletLimit.findUnique.mockResolvedValue(limit);
-      prisma.walletLimit.delete.mockResolvedValue(limit);
+      prisma.transaction.findMany.mockResolvedValue([]);
+      prisma.walletLimit.update.mockResolvedValue({
+        ...limit,
+        deletedAt: new Date(),
+      });
       await service.removeLimits(walletId);
-      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+      expect(prisma.walletLimit.update).toHaveBeenCalledWith({
         where: { walletId },
+        data: { deletedAt: expect.any(Date) },
       });
     });
 
@@ -199,6 +228,7 @@ describe('LimitsService', () => {
           perTransactionLimit: 50,
           dailyLimit: 1000,
         });
+        prisma.transaction.findMany.mockResolvedValue([]);
 
         try {
           await service.checkLimits(walletId, 100);

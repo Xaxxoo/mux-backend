@@ -6,8 +6,15 @@
  * for every meaningful auth outcome.
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { AuthOrchestrator } from './auth-orchestrator.service';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  AuthOrchestrator,
+  EXTERNAL_AUTH_FAILURE_MESSAGE,
+} from './auth-orchestrator.service';
 import { AuthMetricsService } from './auth-metrics.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
@@ -202,12 +209,23 @@ describe('AuthOrchestrator — metrics integration', () => {
   });
 
   describe('unknown error', () => {
-    it('records failure_unknown for generic DB errors', async () => {
+    it('records failure_unknown for generic DB errors, without leaking the raw cause', async () => {
       userService.findOrCreateUser.mockRejectedValue(new Error('DB down'));
 
-      await expect(
-        orchestrator.handleAuthentication({ authId: 'auth-abc' }),
-      ).rejects.toThrow('Authentication failed: DB down');
+      let caught: unknown;
+      try {
+        await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(ServiceUnavailableException);
+      expect((caught as ServiceUnavailableException).message).toBe(
+        EXTERNAL_AUTH_FAILURE_MESSAGE,
+      );
+      expect((caught as ServiceUnavailableException).message).not.toContain(
+        'DB down',
+      );
 
       const snap = metricsService.getSnapshot();
       expect(snap.outcomes.failure_unknown).toBe(1);

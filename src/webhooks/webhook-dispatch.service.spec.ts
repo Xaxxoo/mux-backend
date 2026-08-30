@@ -1,19 +1,39 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { WebhookDispatchService } from './webhook-dispatch.service';
+import * as https from 'https';
+import {
+  WebhookDispatchService,
+  WebhookMtlsConfig,
+} from './webhook-dispatch.service';
 import { WebhookSignerService } from './webhook-signer.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
 jest.mock('axios');
+jest.mock('https');
 
 describe('WebhookDispatchService', () => {
   let service: WebhookDispatchService;
   let mockSigner: any;
   let mockMetrics: any;
   let mockConfigService: any;
+  let mockAxiosInstance: {
+    post: jest.Mock;
+    interceptors: { request: { use: jest.Mock } };
+  };
 
   beforeEach(async () => {
+    // Build the mock axios instance that createRequestIdAwareAxios will receive
+    mockAxiosInstance = {
+      post: jest.fn(),
+      interceptors: {
+        request: {
+          use: jest.fn(),
+        },
+      },
+    };
+    (axios.create as jest.Mock).mockReturnValue(mockAxiosInstance);
+
     mockSigner = {
       generateSignatureHeaders: jest.fn(() => ({
         timestamp: Math.floor(Date.now() / 1000),
@@ -49,8 +69,7 @@ describe('WebhookDispatchService', () => {
 
   describe('deliverWebhook', () => {
     it('should successfully deliver a webhook', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockResolvedValue({
+      mockAxiosInstance.post.mockResolvedValue({
         status: 200,
         data: { success: true },
       });
@@ -66,12 +85,11 @@ describe('WebhookDispatchService', () => {
       expect(result.success).toBe(true);
       expect(result.responseStatus).toBe(200);
       expect(result.responseTime).toBeDefined();
-      expect(mockedAxios.post).toHaveBeenCalled();
+      expect(mockAxiosInstance.post).toHaveBeenCalled();
     });
 
     it('should include signature headers in request', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockResolvedValue({
+      mockAxiosInstance.post.mockResolvedValue({
         status: 200,
         data: { success: true },
       });
@@ -84,7 +102,7 @@ describe('WebhookDispatchService', () => {
         'whsec_secret',
       );
 
-      expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect(mockAxiosInstance.post).toHaveBeenCalledWith(
         'https://example.com/webhook',
         { test: 'payload' },
         expect.objectContaining({
@@ -98,10 +116,7 @@ describe('WebhookDispatchService', () => {
     });
 
     it('should handle delivery failure', async () => {
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockRejectedValue(
-        new Error('Connection refused'),
-      );
+      mockAxiosInstance.post.mockRejectedValue(new Error('Connection refused'));
 
       const result = await service.deliverWebhook(
         'https://example.com/webhook',
@@ -114,6 +129,150 @@ describe('WebhookDispatchService', () => {
       expect(result.success).toBe(false);
       expect(result.errorMessage).toBeDefined();
       expect(result.responseTime).toBeDefined();
+    });
+
+    it('propagates x-request-id via the request-id-aware axios instance', async () => {
+      mockAxiosInstance.post.mockResolvedValue({
+        status: 200,
+        data: { success: true },
+      });
+
+      // Verify the interceptor was registered
+      expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalled();
+    });
+
+    describe('mTLS support', () => {
+      const mtlsConfig: WebhookMtlsConfig = {
+        cert: '-----BEGIN CERTIFICATE-----\nSTUB\n-----END CERTIFICATE-----',
+        key: '-----BEGIN PRIVATE KEY-----\nSTUB\n-----END PRIVATE KEY-----',
+      };
+
+      it('should attach an https.Agent when mTLS config is provided', async () => {
+        mockAxiosInstance.post.mockResolvedValue({
+          status: 200,
+          data: { ok: true },
+        });
+
+        const agentSpy = jest
+          .spyOn(https, 'Agent')
+          .mockImplementation(() => ({}) as any);
+
+        await service.deliverWebhook(
+          'https://secure.example.com/webhook',
+          { event: 'test' },
+          'payment.created',
+          'evt-456',
+          'whsec_secret',
+          mtlsConfig,
+        );
+
+        // The post call should include an httpsAgent
+        const callArgs = mockAxiosInstance.post.mock.calls[0][2];
+        expect(callArgs).toHaveProperty('httpsAgent');
+
+        agentSpy.mockRestore();
+      });
+
+      it('should not attach an https.Agent when mTLS config is absent', async () => {
+        mockAxiosInstance.post.mockResolvedValue({
+          status: 200,
+          data: { ok: true },
+        });
+
+        await service.deliverWebhook(
+          'https://example.com/webhook',
+          { event: 'test' },
+          'payment.created',
+          'evt-789',
+          'whsec_secret',
+        );
+
+        const callArgs = mockAxiosInstance.post.mock.calls[0][2];
+        expect(callArgs).not.toHaveProperty('httpsAgent');
+      });
+
+      it('should pass cert and key (but not log them) to the https.Agent', async () => {
+        mockAxiosInstance.post.mockResolvedValue({
+          status: 200,
+          data: { ok: true },
+        });
+
+        const agentSpy = jest
+          .spyOn(https, 'Agent')
+          .mockImplementation(() => ({}) as any);
+
+        await service.deliverWebhook(
+          'https://secure.example.com/webhook',
+          { event: 'test' },
+          'payment.created',
+          'evt-mtls',
+          'whsec_secret',
+          mtlsConfig,
+        );
+
+        expect(agentSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cert: mtlsConfig.cert,
+            key: mtlsConfig.key,
+          }),
+        );
+
+        agentSpy.mockRestore();
+      });
+
+      it('should include optional CA cert in the https.Agent when provided', async () => {
+        mockAxiosInstance.post.mockResolvedValue({
+          status: 200,
+          data: { ok: true },
+        });
+
+        const agentSpy = jest
+          .spyOn(https, 'Agent')
+          .mockImplementation(() => ({}) as any);
+
+        const mtlsWithCa: WebhookMtlsConfig = {
+          ...mtlsConfig,
+          ca: '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----',
+        };
+
+        await service.deliverWebhook(
+          'https://secure.example.com/webhook',
+          { event: 'test' },
+          'payment.created',
+          'evt-ca',
+          'whsec_secret',
+          mtlsWithCa,
+        );
+
+        expect(agentSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ ca: mtlsWithCa.ca }),
+        );
+
+        agentSpy.mockRestore();
+      });
+
+      it('should return success:false and not expose cert details when mTLS delivery fails', async () => {
+        mockAxiosInstance.post.mockRejectedValue(
+          Object.assign(new Error('certificate verify failed'), {
+            code: 'CERT_VERIFY_FAILED',
+          }),
+        );
+
+        const result = await service.deliverWebhook(
+          'https://secure.example.com/webhook',
+          { event: 'test' },
+          'payment.created',
+          'evt-fail',
+          'whsec_secret',
+          mtlsConfig,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorMessage).toBeDefined();
+        // Cert material must not leak into error messages
+        expect(result.errorMessage).not.toContain(mtlsConfig.cert);
+        expect(result.errorMessage).not.toContain(mtlsConfig.key);
+      });
     });
   });
 

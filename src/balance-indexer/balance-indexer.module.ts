@@ -11,6 +11,7 @@ import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service'
 import { CacheService } from '../common/cache/cache.service';
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
+import { HorizonAccountCacheService } from './horizon-account-cache.service';
 
 @Module({
   imports: [WebhookModule, ConfigModule],
@@ -23,6 +24,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
     BalanceIndexerMetricsService,
     CacheService,
     BalanceCacheService,
+    HorizonAccountCacheService,
     FeatureFlagService,
     FeatureFlagGuard,
   ],
@@ -30,6 +32,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
     BalanceIndexerService,
     BalanceIndexerMetricsService,
     BalanceCacheService,
+    HorizonAccountCacheService,
   ],
 })
 export class BalanceIndexerModule {}

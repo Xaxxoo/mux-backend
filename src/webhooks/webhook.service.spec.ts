@@ -2,10 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
 import { WebhookService } from './webhook.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { CacheService } from '../common/cache/cache.service';
-import { RequestContextService } from '../common/request-context/request-context.service';
 import { EndpointStatus } from './domain/webhook-events';
-import { WEBHOOK_ENDPOINT_CACHE_PREFIX } from './webhook.service';
 
 const PROJECT_ID = 'project-1';
 const ENDPOINT_ID = 'endpoint-1';
@@ -52,14 +49,11 @@ describe('WebhookService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookService,
-        CacheService,
-        RequestContextService,
         { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
     service = module.get<WebhookService>(WebhookService);
-    cache = module.get<CacheService>(CacheService);
   });
 
   it('should be defined', () => {
@@ -188,25 +182,13 @@ describe('WebhookService', () => {
       expect(result.id).toBe(ENDPOINT_ID);
     });
 
-    it('returns cached endpoint on second call without hitting the database', async () => {
+    it('hits the database each time', async () => {
       mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
 
       await service.getEndpoint(ENDPOINT_ID);
       await service.getEndpoint(ENDPOINT_ID);
 
-      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(1);
-      expect(
-        cache.get(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${ENDPOINT_ID}`),
-      ).toBeTruthy();
-    });
-
-    it('falls through to database on cache miss', async () => {
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-
-      expect(cache.get(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${ENDPOINT_ID}`)).toBeNull();
-      await service.getEndpoint(ENDPOINT_ID);
-
-      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(2);
     });
 
     it('throws NotFoundException when endpoint not found', async () => {
@@ -231,22 +213,6 @@ describe('WebhookService', () => {
 
       expect(result.url).toBe('https://new.example.com/hook');
     });
-
-    it('invalidates cache after update', async () => {
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookEndpoint.update.mockResolvedValue(mockEndpoint);
-
-      await service.getEndpoint(ENDPOINT_ID);
-      expect(
-        cache.get(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${ENDPOINT_ID}`),
-      ).toBeTruthy();
-
-      await service.updateEndpoint(ENDPOINT_ID, { description: 'updated' });
-
-      expect(
-        cache.get(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${ENDPOINT_ID}`),
-      ).toBeNull();
-    });
   });
 
   // ─── deleteEndpoint ──────────────────────────────────────────────────────────
@@ -260,18 +226,6 @@ describe('WebhookService', () => {
       expect(mockPrisma.webhookEndpoint.delete).toHaveBeenCalledWith({
         where: { id: ENDPOINT_ID },
       });
-    });
-
-    it('invalidates cache after delete', async () => {
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookEndpoint.delete.mockResolvedValue(mockEndpoint);
-
-      await service.getEndpoint(ENDPOINT_ID);
-      await service.deleteEndpoint(ENDPOINT_ID);
-
-      expect(
-        cache.get(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${ENDPOINT_ID}`),
-      ).toBeNull();
     });
   });
 
@@ -296,20 +250,22 @@ describe('WebhookService', () => {
 
   describe('getDeliveries', () => {
     it('returns paginated deliveries with default page and limit', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
       mockPrisma.webhookDelivery.findMany.mockResolvedValue([]);
       mockPrisma.webhookDelivery.count.mockResolvedValue(0);
 
       const result = await service.getDeliveries(ENDPOINT_ID);
 
       expect(mockPrisma.webhookDelivery.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ skip: 0, take: 20 }),
+        expect.objectContaining({ skip: 0, take: 50 }),
       );
       expect(result.page).toBe(1);
-      expect(result.limit).toBe(20);
+      expect(result.limit).toBe(50);
       expect(result.total).toBe(0);
     });
 
     it('respects custom page and limit', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
       mockPrisma.webhookDelivery.findMany.mockResolvedValue([]);
       mockPrisma.webhookDelivery.count.mockResolvedValue(50);
 
@@ -324,6 +280,7 @@ describe('WebhookService', () => {
     });
 
     it('returns deliveries in the response', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
       const delivery = {
         id: 'delivery-1',
         endpointId: ENDPOINT_ID,

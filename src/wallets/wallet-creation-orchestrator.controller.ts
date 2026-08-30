@@ -12,6 +12,7 @@ import {
   NotFoundException,
   BadRequestException,
   UseGuards,
+  UseInterceptors,
   InternalServerErrorException,
 } from '@nestjs/common';
 import {
@@ -34,6 +35,7 @@ import {
   RateLimitGuard,
   SensitiveEndpoint,
 } from '../rate-limit/rate-limit.guard';
+import { ResponseSanitizerInterceptor } from '../common/interceptors/response-sanitizer.interceptor';
 import {
   FeatureFlagGuard,
   FeatureFlag,
@@ -60,6 +62,7 @@ function parsePaginationParam(
 @Controller('wallets/orchestration')
 @FeatureFlag('wallet_orchestrator')
 @UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
+@UseInterceptors(ResponseSanitizerInterceptor)
 export class WalletCreationOrchestratorController {
   constructor(
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,

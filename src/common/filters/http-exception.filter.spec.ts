@@ -388,6 +388,27 @@ describe('HttpExceptionFilter', () => {
       const jsonCall = mockResponse.json.mock.calls[0][0];
       expect(jsonCall.details).toBeUndefined();
     });
+
+    it('should include errorCode field when provided on the exception body', () => {
+      const exception = new HttpException(
+        { errorCode: 'LIMIT_PER_TX_EXCEEDED', message: 'Per-transaction limit exceeded' },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.errorCode).toBe('LIMIT_PER_TX_EXCEEDED');
+    });
+
+    it('should not include errorCode field when not provided', () => {
+      const exception = new NotFoundException('Not found');
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.errorCode).toBeUndefined();
+    });
   });
 
   describe('HTTP status code mapping', () => {

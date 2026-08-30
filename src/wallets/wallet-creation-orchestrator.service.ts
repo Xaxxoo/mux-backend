@@ -21,6 +21,7 @@ import { IdempotentUserService } from '../users/idempotent-user.service';
 import { SafeLogger } from '../common/safe-logger';
 import { CacheService } from '../common/cache/cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+import { requestIdAwareFetch } from '../common/http/request-id-fetch';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletRetryService } from './wallet-retry.service';
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
@@ -236,9 +237,7 @@ export class WalletCreationOrchestrator implements OnModuleDestroy {
     const resolvedRequestId = requestId || RequestContextService.getCurrentRequestId();
     const requestIdLabel = resolvedRequestId ? ` (requestId=${resolvedRequestId})` : '';
     const startTime = Date.now();
-    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     let committedWallet: Wallet | undefined;
-    const requestIdLabel = requestId ? ` requestId=${requestId}` : '';
     this.logger.log(
       `Starting wallet creation orchestration for user ${request.userId} on ${request.network}${requestIdLabel}`,
     );
@@ -955,7 +954,7 @@ export class WalletCreationOrchestrator implements OnModuleDestroy {
 
   private async fetchWithRetry(url: string): Promise<Response> {
     const request = async (): Promise<Response> => {
-      const response = await fetch(url, { method: 'GET' });
+      const response = await requestIdAwareFetch(url, { method: 'GET' });
       if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
         const error = Object.assign(
           new Error(`Friendbot responded with status ${response.status}`),

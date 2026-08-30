@@ -1,8 +1,19 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as https from 'https';
 import { WebhookSignerService } from './webhook-signer.service';
 import { MetricsService } from '../common/metrics/metrics.service';
-import axios, { AxiosError } from 'axios';
+import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
+import { AxiosError } from 'axios';
+
+export interface WebhookMtlsConfig {
+  /** PEM-encoded client certificate */
+  cert: string;
+  /** PEM-encoded client private key */
+  key: string;
+  /** Optional PEM-encoded CA certificate to verify the server */
+  ca?: string;
+}
 
 export interface WebhookDispatchResult {
   success: boolean;
@@ -18,12 +29,17 @@ export interface WebhookDispatchResult {
  * Responsible only for:
  * - Building the webhook payload
  * - Signing the payload
- * - Making the outbound HTTP call
+ * - Making the outbound HTTP call (with optional mTLS)
+ *
+ * mTLS is opt-in per delivery: pass a {@link WebhookMtlsConfig} to enable
+ * mutual TLS for endpoints that require client certificate authentication.
+ * Cert/key material is never written to logs.
  */
 @Injectable()
 export class WebhookDispatchService {
   private readonly logger = new Logger(WebhookDispatchService.name);
   private readonly requestTimeoutMs: number;
+  private readonly http = createRequestIdAwareAxios();
 
   constructor(
     private readonly webhookSigner: WebhookSignerService,
@@ -37,26 +53,48 @@ export class WebhookDispatchService {
   }
 
   /**
-   * Attempts to deliver a webhook payload to an endpoint
+   * Attempts to deliver a webhook payload to an endpoint.
+   *
+   * @param url        Target endpoint URL
+   * @param payload    JSON-serialisable body
+   * @param eventType  Webhook event type string (e.g. "wallet.created")
+   * @param eventId    Unique event identifier
+   * @param secret     HMAC signing secret
+   * @param mtls       Optional mTLS client certificate configuration.
+   *                   When provided, a dedicated HTTPS agent presenting the
+   *                   client cert is attached to this request only.
+   *                   The cert and key values are never logged.
    */
   async deliverWebhook(
     url: string,
-    payload: any,
+    payload: unknown,
     eventType: string,
     eventId: string,
     secret: string,
+    mtls?: WebhookMtlsConfig,
   ): Promise<WebhookDispatchResult> {
     const startTime = Date.now();
 
-    this.logger.log(`Delivering webhook to ${url} (event: ${eventType})`);
+    this.logger.log(
+      `Delivering webhook to ${url} (event: ${eventType}, mtls: ${mtls ? 'enabled' : 'disabled'})`,
+    );
 
     try {
       // Sign the payload
       const { timestamp, signature } =
         this.webhookSigner.generateSignatureHeaders(payload, secret);
 
-      // Make HTTP request
-      const response = await axios.post(url, payload, {
+      // Build optional mTLS HTTPS agent
+      const httpsAgent = mtls
+        ? new https.Agent({
+            cert: mtls.cert,
+            key: mtls.key,
+            ...(mtls.ca ? { ca: mtls.ca } : {}),
+          })
+        : undefined;
+
+      // Make HTTP request (x-request-id is automatically propagated)
+      const response = await this.http.post(url, payload, {
         headers: {
           'Content-Type': 'application/json',
           'X-Webhook-Event-Type': eventType,
@@ -69,6 +107,7 @@ export class WebhookDispatchService {
         },
         timeout: this.requestTimeoutMs,
         validateStatus: (status) => status >= 200 && status < 300,
+        ...(httpsAgent ? { httpsAgent } : {}),
       });
 
       const responseTime = Date.now() - startTime;
@@ -90,9 +129,7 @@ export class WebhookDispatchService {
         ? JSON.stringify(axiosError.response.data).substring(0, 500)
         : axiosError.message;
 
-      this.logger.warn(
-        `Webhook delivery failed: ${axiosError.message}`,
-      );
+      this.logger.warn(`Webhook delivery failed: ${axiosError.message}`);
 
       return {
         success: false,

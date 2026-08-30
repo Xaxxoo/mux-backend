@@ -11,7 +11,11 @@
  * - Error propagation from collaborators
  */
 import { Test, TestingModule } from '@nestjs/testing';
-import { AuthOrchestrator } from './auth-orchestrator.service';
+import { ServiceUnavailableException } from '@nestjs/common';
+import {
+  AuthOrchestrator,
+  EXTERNAL_AUTH_FAILURE_MESSAGE,
+} from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from '../wallets/domain/wallet.model';
@@ -229,17 +233,28 @@ describe('AuthOrchestrator (integration harness)', () => {
   // -------------------------------------------------------------------------
 
   describe('error propagation', () => {
-    it('wraps user service errors in an Authentication failed error', async () => {
+    it('wraps user service errors in a consolidated, generic 503 — never leaking the raw cause', async () => {
       userService.findOrCreateUser.mockRejectedValue(
         new Error('DB unavailable'),
       );
 
-      await expect(
-        orchestrator.handleAuthentication({ authId: 'auth-abc' }),
-      ).rejects.toThrow('Authentication failed: DB unavailable');
+      let caught: unknown;
+      try {
+        await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(ServiceUnavailableException);
+      expect((caught as ServiceUnavailableException).message).toBe(
+        EXTERNAL_AUTH_FAILURE_MESSAGE,
+      );
+      expect((caught as ServiceUnavailableException).message).not.toContain(
+        'DB unavailable',
+      );
     });
 
-    it('wraps wallet creation errors in an Authentication failed error', async () => {
+    it('wraps wallet creation errors in a consolidated, generic 503 — never leaking the raw cause', async () => {
       userService.findOrCreateUser.mockResolvedValue({
         user: makeUser(),
         isNewUser: true,
@@ -249,9 +264,20 @@ describe('AuthOrchestrator (integration harness)', () => {
         new Error('Stellar unavailable'),
       );
 
-      await expect(
-        orchestrator.handleAuthentication({ authId: 'auth-abc' }),
-      ).rejects.toThrow('Authentication failed: Stellar unavailable');
+      let caught: unknown;
+      try {
+        await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(ServiceUnavailableException);
+      expect((caught as ServiceUnavailableException).message).toBe(
+        EXTERNAL_AUTH_FAILURE_MESSAGE,
+      );
+      expect((caught as ServiceUnavailableException).message).not.toContain(
+        'Stellar unavailable',
+      );
     });
   });
 

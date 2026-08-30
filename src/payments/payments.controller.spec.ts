@@ -14,6 +14,7 @@ describe('PaymentsController', () => {
   beforeEach(async () => {
     paymentsService = {
       create: jest.fn(),
+      dryRun: jest.fn(),
       findAll: jest.fn(),
       findOne: jest.fn(),
       update: jest.fn(),
@@ -40,6 +41,24 @@ describe('PaymentsController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('dryRun', () => {
+    it('delegates payment validation to the service', async () => {
+      const dto = {
+        walletId: 'sender-wallet',
+        receiverWalletId: 'receiver-wallet',
+        fromId: 1,
+        toId: 2,
+        amount: 25,
+        currency: 'USD',
+      };
+      const response = { dryRun: true, valid: true };
+      paymentsService.dryRun.mockResolvedValue(response);
+
+      await expect(controller.dryRun(dto)).resolves.toEqual(response);
+      expect(paymentsService.dryRun).toHaveBeenCalledWith(dto);
+    });
   });
 
   describe('update', () => {
@@ -106,7 +125,14 @@ describe('PaymentsController', () => {
 
   describe('swagger decorators', () => {
     it('should have @ApiResponse decorators on all routes', () => {
-      const routes = ['create', 'findAll', 'findOne', 'update', 'remove'];
+      const routes = [
+        'create',
+        'dryRun',
+        'findAll',
+        'findOne',
+        'update',
+        'remove',
+      ];
 
       routes.forEach((route) => {
         const descriptor = Object.getOwnPropertyDescriptor(
@@ -115,13 +141,23 @@ describe('PaymentsController', () => {
         );
         expect(descriptor).toBeDefined();
 
-        const metadata = Reflect.getMetadata('swagger/apiResponse', descriptor.value);
+        const metadata = Reflect.getMetadata(
+          'swagger/apiResponse',
+          descriptor.value,
+        );
         expect(metadata).toBeDefined();
       });
     });
 
     it('should have @ApiOperation on all routes', () => {
-      const routes = ['create', 'findAll', 'findOne', 'update', 'remove'];
+      const routes = [
+        'create',
+        'dryRun',
+        'findAll',
+        'findOne',
+        'update',
+        'remove',
+      ];
 
       routes.forEach((route) => {
         const descriptor = Object.getOwnPropertyDescriptor(
@@ -130,7 +166,10 @@ describe('PaymentsController', () => {
         );
         expect(descriptor).toBeDefined();
 
-        const metadata = Reflect.getMetadata('swagger/apiOperation', descriptor.value);
+        const metadata = Reflect.getMetadata(
+          'swagger/apiOperation',
+          descriptor.value,
+        );
         expect(metadata).toBeDefined();
       });
     });

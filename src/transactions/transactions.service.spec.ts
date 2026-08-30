@@ -94,6 +94,7 @@ describe('TransactionsService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TransactionsService,
+        CacheService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: BalanceIndexerService, useValue: mockBalanceIndexer },
         { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
@@ -314,7 +315,9 @@ describe('TransactionsService', () => {
   describe('findByWallet', () => {
     it('returns paginated transactions for a valid wallet', async () => {
       mockPrisma.wallet.findUnique.mockResolvedValue({ id: 'wallet-1' });
-      mockPrisma.transaction.findMany.mockResolvedValue([makePrismaTransaction()]);
+      mockPrisma.transaction.findMany.mockResolvedValue([
+        makePrismaTransaction(),
+      ]);
       mockPrisma.transaction.count.mockResolvedValue(1);
 
       const result = await service.findByWallet('wallet-1');
@@ -418,6 +421,7 @@ describe('TransactionsService', () => {
       // Populate cache by calling findOne
       mockPrisma.transaction.findUnique.mockResolvedValueOnce(tx);
       await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(1);
 
       // Update status
       mockPrisma.transaction.findUnique.mockResolvedValueOnce(existing);
@@ -427,7 +431,10 @@ describe('TransactionsService', () => {
         status: TransactionStatus.SUBMITTED,
       });
 
-      expect(mockQueryService.invalidateCache).toHaveBeenCalledWith('tx-1');
+      // Cache should be invalidated, so the next findOne must hit the database again
+      mockPrisma.transaction.findUnique.mockResolvedValueOnce(updated);
+      await service.findOne('tx-1');
+      expect(mockPrisma.transaction.findUnique).toHaveBeenCalledTimes(3);
     });
 
     it('emits transaction.pending webhook on SUBMITTED status', async () => {

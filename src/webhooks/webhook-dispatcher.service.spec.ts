@@ -1,18 +1,32 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
-import { PrismaService } from '../prisma/prisma.service';
+import { WebhookDispatchService } from './webhook-dispatch.service';
+import { WebhookRetryService } from './webhook-retry.service';
 import { WebhookSignerService } from './webhook-signer.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ConfigService } from '@nestjs/config';
 import { DeliveryStatus, EndpointStatus } from './domain/webhook-events';
 import axios from 'axios';
 
-jest.mock('axios');
+// Mock only the outbound HTTP call, keeping the real AxiosError class intact —
+// webhook-dispatcher.service.ts constructs `new AxiosError(...)` to classify
+// delivery failures, which needs the real class to set `.response` correctly.
+jest.mock('axios', () => {
+  const actualAxios = jest.requireActual('axios');
+  return {
+    __esModule: true,
+    ...actualAxios,
+    default: {
+      ...actualAxios.default,
+      post: jest.fn(),
+    },
+  };
+});
 
 describe('WebhookDispatcherService', () => {
   let service: WebhookDispatcherService;
   let mockPrisma: any;
-  let mockSigner: any;
   let mockMetrics: any;
   let mockConfigService: any;
 
@@ -38,7 +52,7 @@ describe('WebhookDispatcherService', () => {
     mockPrisma = {
       webhookEndpoint: {
         findMany: jest.fn(),
-        findUnique: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(mockEndpoint),
         update: jest.fn(),
       },
       webhookDelivery: {
@@ -46,14 +60,6 @@ describe('WebhookDispatcherService', () => {
         update: jest.fn(),
         create: jest.fn(),
       },
-    };
-
-    mockSigner = {
-      generateSignatureHeaders: jest.fn(() => ({
-        timestamp: Math.floor(Date.now() / 1000),
-        signature: 'sig_test',
-      })),
-      formatSignatureHeader: jest.fn(() => 't=123,v1=sig_test'),
     };
 
     mockMetrics = {
@@ -68,8 +74,10 @@ describe('WebhookDispatcherService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookDispatcherService,
+        WebhookDispatchService,
+        WebhookRetryService,
+        WebhookSignerService,
         { provide: PrismaService, useValue: mockPrisma },
-        { provide: WebhookSignerService, useValue: mockSigner },
         { provide: MetricsService, useValue: mockMetrics },
         { provide: ConfigService, useValue: mockConfigService },
       ],
@@ -91,7 +99,7 @@ describe('WebhookDispatcherService', () => {
 
       mockPrisma.webhookEndpoint.findMany.mockResolvedValue([]);
 
-      await service.dispatchEvent({ event });
+      await service.dispatchEvent({ event: event as any });
 
       expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
         'webhooks_dispatched_total',
@@ -106,43 +114,38 @@ describe('WebhookDispatcherService', () => {
         data: { success: true },
       });
 
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookDelivery.update.mockResolvedValue(mockDelivery);
+      const result = await service['attemptDelivery'](mockDelivery);
 
-      await service['attemptDelivery'](mockDelivery);
-
+      expect(result).toBe(DeliveryStatus.DELIVERED);
       expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
         'webhooks_delivered_total',
         { event_type: 'wallet.created', result: 'success' },
       );
     });
 
-    it('should increment webhooks_delivered_total with failure on failed delivery', async () => {
+    it('should increment webhooks_delivered_total with failure on a non-retryable delivery error', async () => {
       const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockRejectedValue(
-        new Error('Connection refused'),
-      );
+      mockedAxios.post.mockRejectedValue({
+        response: { status: 400 },
+        message: 'Bad request',
+      });
 
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookDelivery.update.mockResolvedValue(mockDelivery);
+      const firstAttempt = { ...mockDelivery, attempts: 0 };
+      const result = await service['attemptDelivery'](firstAttempt);
 
-      await service['attemptDelivery'](mockDelivery);
-
+      expect(result).toBe(DeliveryStatus.FAILED);
       expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
         'webhooks_delivered_total',
         { event_type: 'wallet.created', result: 'failure' },
       );
     });
 
-    it('should increment webhooks_retry_total on retry', async () => {
+    it('should increment webhooks_retry_total when a retryable error occurs with attempts remaining', async () => {
       const mockedAxios = axios as jest.Mocked<typeof axios>;
       mockedAxios.post.mockRejectedValue({
         response: { status: 500 },
         message: 'Server error',
       });
-
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookDelivery.update.mockResolvedValue(mockDelivery);
 
       const deliveryFirstAttempt = { ...mockDelivery, attempts: 0 };
       const result = await service['attemptDelivery'](deliveryFirstAttempt);
@@ -161,9 +164,6 @@ describe('WebhookDispatcherService', () => {
         data: { success: true },
       });
 
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookDelivery.update.mockResolvedValue(mockDelivery);
-
       await service['attemptDelivery'](mockDelivery);
 
       expect(mockMetrics.recordHistogram).toHaveBeenCalledWith(
@@ -179,9 +179,6 @@ describe('WebhookDispatcherService', () => {
         response: { status: 500 },
         message: 'Server error',
       });
-
-      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
-      mockPrisma.webhookDelivery.update.mockResolvedValue(mockDelivery);
 
       const maxRetriesDelivery = { ...mockDelivery, attempts: 4 }; // 5 total attempts
 

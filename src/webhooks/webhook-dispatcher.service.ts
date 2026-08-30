@@ -39,6 +39,18 @@ export class WebhookDispatcherService {
   }
 
   /**
+   * Structured logging helper: routes to the matching SafeLogger level with
+   * a redacted metadata payload attached.
+   */
+  private log(
+    level: 'log' | 'warn' | 'error',
+    message: string,
+    meta?: Record<string, unknown>,
+  ): void {
+    this.logger[level](message, meta ?? {});
+  }
+
+  /**
    * Dispatches an event to all registered webhooks
    */
   async dispatchEvent(request: DispatchEventRequest): Promise<void> {
@@ -101,7 +113,7 @@ export class WebhookDispatcherService {
             nextRetryAt: { lte: new Date() },
           },
         ],
-        attempts: { lt: this.maxRetries },
+        attempts: { lt: this.retryService.getMaxRetries() },
       },
       include: {
         endpoint: true,
@@ -254,7 +266,6 @@ export class WebhookDispatcherService {
     return DeliveryStatus.FAILED;
   }
 
-
   /**
    * Finds endpoints subscribed to an event type
    */
@@ -283,7 +294,7 @@ export class WebhookDispatcherService {
         payload: JSON.parse(JSON.stringify(event)),
         status: DeliveryStatus.PENDING,
         attempts: 0,
-        maxAttempts: this.maxRetries,
+        maxAttempts: this.retryService.getMaxRetries(),
       },
     });
   }
@@ -309,5 +320,4 @@ export class WebhookDispatcherService {
       },
     });
   }
-
 }

@@ -226,6 +226,28 @@ describe('Custody Threat Model', () => {
       expect(entry!.success).toBe(true);
       expect(entry!.keyId).toBe('wallet-pred');
     });
+
+    it('links successor key version from the new key material on rotation', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(makeWallet());
+      let capturedKeyVersion: number | undefined;
+      mockPrisma.$transaction.mockImplementationOnce(async (cb: any) =>
+        cb({
+          wallet: {
+            create: jest.fn().mockImplementation((args: any) => {
+              capturedKeyVersion = args.data.keyVersion;
+              return { id: 'wallet-succ', publicKey: 'GSUCCESSOR', keyVersion: args.data.keyVersion };
+            }),
+            update: jest.fn().mockResolvedValue({}),
+          },
+        }),
+      );
+      const result = await service.rotateKey('wallet-pred');
+      expect(capturedKeyVersion).toBeDefined();
+      expect(typeof capturedKeyVersion).toBe('number');
+      expect(result.successorKeyVersion).toBeDefined();
+      expect(typeof result.successorKeyVersion).toBe('number');
+      expect(result.successorKeyVersion).toBe(capturedKeyVersion);
+    });
   });
 
   // -------------------------------------------------------------------------

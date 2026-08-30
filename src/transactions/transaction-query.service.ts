@@ -3,11 +3,31 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TransactionStatus } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { CacheService } from '../common/cache/cache.service';
+import { PaginatedTransactionsDto } from './dto/paginated-transactions.dto';
 
+/**
+ * Extended filter options for querying transactions.
+ *
+ * #497: Added assetType, assetCode, minAmount, maxAmount, createdAfter, createdBefore
+ * to the existing senderWalletId / receiverWalletId / status / memo filters.
+ */
 export interface TransactionFilters {
   senderWalletId?: string;
   receiverWalletId?: string;
   status?: TransactionStatus;
+  /** Filter by asset type (e.g. "NATIVE", "CREDIT_ALPHANUM4"). */
+  assetType?: string;
+  /** Filter by asset code (e.g. "USDC"). */
+  assetCode?: string;
+  /** Minimum amount (inclusive, stored as string for precision). */
+  minAmount?: string;
+  /** Maximum amount (inclusive, stored as string for precision). */
+  maxAmount?: string;
+  /** Return only transactions created on or after this date. */
+  createdAfter?: Date;
+  /** Return only transactions created on or before this date. */
+  createdBefore?: Date;
+  memo?: string;
   limit?: number;
   offset?: number;
 }
@@ -28,7 +48,11 @@ export class TransactionQueryService {
     private readonly cache: CacheService,
   ) {}
 
-  async findAll(filters?: TransactionFilters): Promise<TransactionEntity[]> {
+  /**
+   * Find all transactions matching the given filters, ordered newest-first.
+   * Returns a paginated envelope with total count and hasMore flag.
+   */
+  async findAll(filters?: TransactionFilters): Promise<PaginatedTransactionsDto> {
     const where: any = {};
 
     if (filters?.senderWalletId) {
@@ -43,14 +67,61 @@ export class TransactionQueryService {
       where.status = filters.status;
     }
 
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: filters?.limit,
-      skip: filters?.offset,
-    });
+    // #497: asset-type and asset-code filters
+    if (filters?.assetType) {
+      where.assetType = filters.assetType;
+    }
 
-    return transactions.map((t) => this.mapPrismaToEntity(t));
+    if (filters?.assetCode) {
+      where.assetCode = filters.assetCode;
+    }
+
+    // #497: amount range filter
+    if (filters?.minAmount !== undefined || filters?.maxAmount !== undefined) {
+      where.amount = {};
+      if (filters.minAmount !== undefined) {
+        where.amount.gte = filters.minAmount;
+      }
+      if (filters.maxAmount !== undefined) {
+        where.amount.lte = filters.maxAmount;
+      }
+    }
+
+    // #497: date range filter
+    if (filters?.createdAfter !== undefined || filters?.createdBefore !== undefined) {
+      where.createdAt = {};
+      if (filters.createdAfter !== undefined) {
+        where.createdAt.gte = filters.createdAfter;
+      }
+      if (filters.createdBefore !== undefined) {
+        where.createdAt.lte = filters.createdBefore;
+      }
+    }
+
+    if (filters?.memo) {
+      where.memo = { contains: filters.memo, mode: 'insensitive' };
+    }
+
+    const limit = filters?.limit ?? 20;
+    const offset = filters?.offset ?? 0;
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({ where }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+      limit,
+      offset,
+      hasMore: offset + transactions.length < total,
+    };
   }
 
   async findOne(id: string): Promise<TransactionEntity> {
@@ -108,6 +179,41 @@ export class TransactionQueryService {
     return transaction ? this.mapPrismaToEntity(transaction) : null;
   }
 
+  /**
+   * Find transactions stuck in PENDING status for longer than the specified threshold.
+   * Returns paginated results, sorted by createdAt ascending (oldest first).
+   */
+  async findStuckPendingTransactions(
+    thresholdMinutes: number = 60,
+    limit: number = 100,
+    offset: number = 0,
+  ): Promise<{ data: TransactionEntity[]; total: number }> {
+    const thresholdDate = new Date(Date.now() - thresholdMinutes * 60 * 1000);
+
+    const [transactions, total] = await Promise.all([
+      this.prisma.transaction.findMany({
+        where: {
+          status: TransactionStatus.PENDING,
+          createdAt: { lt: thresholdDate },
+        },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.transaction.count({
+        where: {
+          status: TransactionStatus.PENDING,
+          createdAt: { lt: thresholdDate },
+        },
+      }),
+    ]);
+
+    return {
+      data: transactions.map((t) => this.mapPrismaToEntity(t)),
+      total,
+    };
+  }
+
   invalidateCache(id: string): void {
     this.cache.delete(`${TransactionQueryService.CACHE_KEY_PREFIX}:${id}`);
   }
@@ -121,6 +227,7 @@ export class TransactionQueryService {
       assetIssuer: prismaTransaction.assetIssuer,
       senderWalletId: prismaTransaction.senderWalletId,
       receiverWalletId: prismaTransaction.receiverWalletId,
+      memo: prismaTransaction.memo,
       status: prismaTransaction.status as TransactionStatus,
       stellarHash: prismaTransaction.stellarHash,
       stellarLedger: prismaTransaction.stellarLedger,

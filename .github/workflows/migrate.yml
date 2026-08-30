@@ -37,6 +37,8 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-ok
+      NODE_ENV: test
 
     steps:
       - name: Checkout
@@ -66,3 +68,9 @@ jobs:
 
       - name: Run migrations
         run: pnpm prisma:migrate:prod
+
+      - name: Run application unit tests
+        run: pnpm test
+
+      - name: Run application e2e tests
+        run: pnpm test:e2e

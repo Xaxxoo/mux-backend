@@ -29,6 +29,9 @@ export interface Wallet {
   /** Chain-agnostic public identifier (address/public key). */
   publicKey: string;
 
+  /** Optional user-defined label for this wallet (max 100 chars). */
+  nickname?: string | null;
+
   /** Chain-agnostic encrypted secret material (envelope/serialized payload). */
   encryptedSecret: string;
 

@@ -1,3 +1,11 @@
+import { Module } from '@nestjs/common';
+import { TracingService } from './tracing.service';
+
+@Module({
+  providers: [TracingService],
+  exports: [TracingService],
+})
+export class TracingModule {}
 import { Module, DynamicModule, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TracingService } from './tracing.service';

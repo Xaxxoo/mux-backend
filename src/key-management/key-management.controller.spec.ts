@@ -19,6 +19,7 @@ import { KeyManagementController } from './key-management.controller';
 import { KeyManagementService } from './key-management.service';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
+import { InternalServiceGuard } from './guards/internal-service.guard';
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import { KeyType } from './domain/key-types';
 import { Reflector } from '@nestjs/core';
@@ -56,6 +57,7 @@ async function buildModule(flagEnabled: boolean) {
       predecessorWalletId: 'wallet-pred',
       successorWalletId: 'wallet-succ',
       successorPublicKey: 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN',
+      successorKeyVersion: 1,
     }),
     getAuditLog: jest.fn().mockReturnValue([]),
     getStatistics: jest.fn().mockReturnValue({}),
@@ -80,7 +82,12 @@ async function buildModule(flagEnabled: boolean) {
       { provide: FeatureFlagService, useValue: featureFlagService },
       Reflector,
     ],
-  }).compile();
+  })
+    // #690: InternalServiceGuard has its own spec; bypass it here so the
+    // delegation tests exercise controller logic only.
+    .overrideGuard(InternalServiceGuard)
+    .useValue({ canActivate: () => true })
+    .compile();
 
   return {
     module,
@@ -320,13 +327,14 @@ describe('KeyManagementController — delegation', () => {
 
   // rotateKey
   describe('rotateKey', () => {
-    it('delegates and returns rotation result', async () => {
+    it('delegates and returns rotation result with successor key version', async () => {
       const result = await controller.rotateKey({ walletId: 'wallet-pred' });
 
       expect(keyManagementService.rotateKey).toHaveBeenCalledWith('wallet-pred');
       expect(result).toMatchObject({
         predecessorWalletId: 'wallet-pred',
         successorWalletId: 'wallet-succ',
+        successorKeyVersion: 1,
       });
     });
   });

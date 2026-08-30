@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule } from './config/config.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PrismaModule } from './prisma/prisma.module';
 import { MetricsModule } from './metrics/metrics.module';
@@ -17,30 +17,34 @@ import { RecoveryModule } from './recovery/recovery.module';
 import { AuthModule } from './auth/auth.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RateLimitGuard } from './rate-limit/rate-limit.guard';
+import { MaintenanceGuard } from './maintenance/maintenance.guard';
+import { MaintenanceModule } from './maintenance/maintenance.module';
 import { ApiKeyModule } from './api-keys/api-key.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { KeyManagementModule } from './key-management/key-management.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
 import { TransactionsModule } from './transactions/transactions.module';
-import { HealthModule } from './health/health.module';
-
+import { HorizonHistoryImportModule } from './horizon-history-import/horizon-history-import.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
+import { IdempotentUserModule } from './users/idempotent-user.module';
+import { TracingModule } from './tracing/tracing.module';
+import { ApiChangelogModule } from './api-changelog/api-changelog.module';
+import { BackupModule } from './backup/backup.module';
+import { SloModule } from './common/slo/slo.module';
+import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      envFilePath: '.env',
-      validate: validateEnvironment,
-    }),
+    ConfigModule,
     EventEmitterModule.forRoot(),
     MetricsModule,
     TracingModule.forRoot(),
     PrismaModule,
     AuthModule,
+    MaintenanceModule,
     RateLimitModule,
     UsersModule,
     IdempotentUserModule,
@@ -54,9 +58,15 @@ import { HealthModule } from './health/health.module';
     BalanceIndexerModule,
     WebhookModule,
     TransactionsModule,
+    HorizonHistoryImportModule,
     DevelopersModule,
     ProjectsModule,
     HealthModule,
+    IdempotentUserModule,
+    TracingModule,
+    ApiChangelogModule,
+    BackupModule,
+    SloModule,
   ],
   controllers: [AppController],
   providers: [
@@ -68,7 +78,16 @@ import { HealthModule } from './health/health.module';
     },
     {
       provide: APP_GUARD,
+      useClass: MaintenanceGuard,
+    },
+    {
+      provide: APP_GUARD,
       useClass: RateLimitGuard,
+    },
+    // Apply latency SLO tracking globally
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: LatencySloInterceptor,
     },
   ],
 })

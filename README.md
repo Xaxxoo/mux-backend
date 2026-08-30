@@ -10,16 +10,20 @@ Mux Backend abstracts blockchain complexity behind a secure, Web2-friendly API, 
 
 Mux Backend is the trusted coordination layer between:
 
-* Web2 authentication providers (Clerk / Better Auth)
+* Web2 authentication providers (Clerk / Better Auth) — verified via cryptographic JWT validation
 * Stellar accounts and Soroban smart contracts
 * Frontend clients and SDKs
 
 It handles wallet creation, transaction orchestration, fee sponsorship, and on-chain/off-chain state reconciliation.
 
+**Critical security invariant**: User identity is established only through cryptographic verification of JWT tokens from the configured identity provider. Tokens are verified at every authentication request. Local user status (ACTIVE/INACTIVE/SUSPENDED) is checked and enforced on every call. No client-supplied identity claims are trusted.
+
 ---
 
 ## Core Responsibilities
 
+* **Cryptographic identity verification**: Verify all user identity claims via signed JWT tokens from the configured identity provider (Clerk or Better Auth). No client-supplied identity is trusted.
+* **User status enforcement**: Enforce local user status checks (ACTIVE/INACTIVE/SUSPENDED) on every authentication request, rejecting disabled or suspended accounts.
 * Invisible wallet creation and management
 * Secure custody and encryption of Stellar keypairs
 * Transaction relaying and fee sponsorship
@@ -34,6 +38,69 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 ## API Endpoints
 
 All routes below are served under the `/v1` prefix (e.g. `GET /v1/health`). See [docs/API-VERSIONING.md](docs/API-VERSIONING.md) for the versioning strategy.
+
+### Error responses
+
+Every error — thrown `HttpException`, unhandled exception, or validation
+failure — is returned by a global exception filter in the same structured
+envelope:
+
+```json
+{
+  "statusCode": 422,
+  "timestamp": "2026-07-30T12:34:56.789Z",
+  "path": "/v1/wallets/123/limits",
+  "method": "POST",
+  "message": "Per-transaction limit exceeded. Limit: 1000",
+  "error": "Unprocessable Entity",
+  "errorCode": "LIMIT_PER_TX_EXCEEDED",
+  "requestId": "..."
+}
+```
+
+`error` and `message` are always present. `errorCode` (a stable, machine-readable
+string) and `details` (a structured object) are included only when the thrown
+exception provides them. `requestId` is echoed back from the `X-Request-ID`
+request header when present. In production, `message` on unhandled 500 errors
+is sanitized to strip connection strings, file paths, and secrets.
+
+### Request body size
+
+JSON and URL-encoded request bodies are limited to 100 KiB by default. Set
+`JSON_BODY_LIMIT_BYTES` to a value from 1 byte through 10 MiB to change the
+limit. Requests over the configured limit return `413 Payload Too Large`:
+
+```json
+{
+  "statusCode": 413,
+  "error": "Payload Too Large",
+  "message": "Request body exceeds the maximum allowed size"
+}
+```
+
+### Maintenance mode
+
+Maintenance mode is persisted in PostgreSQL and shared by every API instance.
+While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
+Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
+delay is returned in the `Retry-After` header.
+
+Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
+send `PATCH /v1/maintenance` with normal API-key authentication plus the
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
+is required in production — startup fails fast if it is unset.
+
+```json
+{
+  "enabled": true,
+  "message": "Scheduled ledger maintenance",
+  "retryAfterSeconds": 300
+}
+```
+
+The maintenance endpoint itself remains available while maintenance mode is on
+so an authorized operator can disable it. If the persisted state cannot be read,
+mutating requests fail closed with `503 Service Unavailable`.
 
 ### Health & Monitoring
 
@@ -78,19 +145,29 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 
 #### `POST /auth/authenticate`
 
-Main authentication endpoint for user onboarding and wallet creation.
+Main authentication endpoint for user onboarding and wallet creation with cryptographic identity verification.
 
-**Purpose**: Handles both first-time and returning users. Creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
+**Purpose**: Handles both first-time and returning users. Verifies the caller's identity via signed JWT token, creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
 
-**Authentication**: **Public endpoint** (no API key required) - This must be public as it's used for initial authentication before an API key is available.
+**Authentication**: **Public endpoint** (no API key required) — This must be public as it's used for initial authentication before an API key is available. However, a **valid, signed JWT token** from the configured identity provider (Clerk or Better Auth) is **required** in the Authorization header.
 
-**Request Body**:
+**Identity Verification**:
+- The Authorization header must contain a bearer token (JWT) from the configured identity provider.
+- The backend verifies the token signature cryptographically against the provider's keys.
+- User identity (authId, authProvider) is extracted **only** from the verified token claims.
+- Any authId or authProvider supplied in the request body are ignored; identity always comes from the verified JWT.
+- Suspended or inactive accounts (status != ACTIVE) are rejected.
+
+**Request Headers**:
+```
+Authorization: Bearer <jwt_token_from_clerk_or_better_auth>
+```
+
+**Request Body** (only email, displayName, and network are used; authId/authProvider come from JWT):
 ```json
 {
-  "authId": "auth-provider-user-id",
   "email": "user@example.com",
   "displayName": "User Name",
-  "authProvider": "CLERK",
   "network": "TESTNET"
 }
 ```
@@ -100,33 +177,86 @@ Main authentication endpoint for user onboarding and wallet creation.
 {
   "user": {
     "id": "uuid",
-    "authId": "auth-provider-user-id",
+    "authId": "verified-from-jwt-sub-claim",
     "email": "user@example.com",
     "displayName": "User Name",
     "status": "ACTIVE",
-    "authProvider": "CLERK",
-    "createdAt": "2026-05-30T12:00:00.000Z",
-    "updatedAt": "2026-05-30T12:00:00.000Z"
+    "authProvider": "verified-from-jwt-auth-provider-claim",
+    "lastLoginAt": "2026-05-30T12:00:00.000Z"
   },
   "wallet": {
     "id": "uuid",
-    "userId": "uuid",
     "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     "network": "TESTNET",
     "status": "ACTIVE",
-    "createdAt": "2026-05-30T12:00:00.000Z",
-    "updatedAt": "2026-05-30T12:00:00.000Z"
+    "createdAt": "2026-05-30T12:00:00.000Z"
   },
+  "refreshToken": "hex-encoded-token",
   "isNewUser": false,
   "isNewWallet": false
 }
 ```
+
+**Response (401 Unauthorized)**:
+- Returned if Authorization header is missing or token verification fails.
+
+**Response (403 Forbidden)**:
+- Returned if the verified user has INACTIVE or SUSPENDED status.
 
 **Use Cases**:
 - Initial user authentication and onboarding
 - Automatic wallet creation for new users
 - Idempotent user/wallet retrieval for returning users
 - Integration with Web2 auth providers (Clerk, Better Auth, etc.)
+- Safe account suspension/deactivation enforcement
+
+---
+
+## Authentication & Trust Model
+
+Mux Backend uses a **server-side verification only** trust model for user authentication. This is critical given that the backend custodies Stellar private keys and relays sponsored transactions.
+
+### What is Verified
+
+1. **JWT Signature**: Every authentication request requires a signed JWT token from the configured identity provider (Clerk or Better Auth). The backend cryptographically verifies the token signature using the provider's public keys. Tampered, forged, or unsigned tokens are rejected.
+
+2. **Token Claims**: The verified token must contain:
+   - `sub` (subject): The user's unique identifier in the identity provider system. This becomes the `authId` in Mux Backend.
+   - `auth_provider`: The identity provider name (CLERK, BETTER_AUTH, etc.). This becomes the `authProvider`.
+
+3. **User Status**: After identity is verified from the JWT, the backend checks the local user record's status field. Users with status `INACTIVE` or `SUSPENDED` are rejected, even if their JWT is valid. This allows operators to disable compromised or abusive accounts immediately.
+
+### What is NOT Trusted
+
+- **Client-supplied identity fields**: Any authId or authProvider values supplied in the request body are ignored. Identity always comes from the verified JWT token. This prevents attacks where a malicious client impersonates another user.
+- **Email or display name**: These are optional metadata fields that are validated but not used for identity. A user's identity is established solely through the verified JWT `sub` claim.
+- **Provider profile fields**: Data relayed from the identity provider (e.g., the user's email stored in Clerk) is not used for access control. Local status is the authoritative source.
+
+### Production Safety
+
+In production (`NODE_ENV=production`):
+- If JWT verification is unavailable (library not installed, configuration missing), the application fails to start or requests fail with 503 Service Unavailable. There is no silent fallback to trusting client-supplied identity.
+- Identity provider configuration (e.g., `CLERK_JWT_PUBLIC_KEY` or `BETTER_AUTH_JWKS_URL`) is required and validated at startup.
+
+### Development & Testing
+
+For local development without live provider credentials, set `AUTH_SKIP_JWT_VERIFICATION=true` and use dev-mode stub tokens in format: `dev-<provider>-<userid>` (e.g., `dev-clerk-user123`). This mode is structurally impossible to enable in production and is clearly marked as development-only in code.
+
+---
+
+## User Lifecycle
+
+Users go through the following lifecycle:
+
+1. **Onboarding**: User presents a valid JWT token to `POST /auth/authenticate`. If new, a user record and wallet are created. Status is set to `ACTIVE`.
+
+2. **Active**: User can authenticate and use all API endpoints. Every request verifies their JWT token and checks they remain `ACTIVE`.
+
+3. **Suspended** (operator-initiated): Operator updates the user's status to `SUSPENDED` via internal admin tools or database. Subsequent authentication attempts fail with 403 Forbidden, even though the user's JWT may still be valid. The user cannot authenticate or access any endpoints.
+
+4. **Inactive** (similar to suspended): User status can be set to `INACTIVE` for other reasons (e.g., terms violation, dormant account cleanup). Behaves identically to `SUSPENDED` — authentication is rejected.
+
+Users cannot be "deleted" through normal API flows; instead, their status is changed to reflect they should not authenticate. This preserves audit trails and on-chain transaction history.
 
 ---
 
@@ -139,6 +269,13 @@ Main authentication endpoint for user onboarding and wallet creation.
 * Keys encrypted and stored securely server-side
 
 ### 🔁 Transaction Orchestration
+
+Payment creation validates the UUID wallet identities, creates the modern
+transaction record, signs with the sender wallet custody key, and submits the
+envelope to Horizon. Legacy `fromId`, `toId`, and `userId` payment fields are
+optional compatibility fields during migration. Recovery administration
+requires `X-Recovery-Admin-Secret` and `X-Admin-ID`; production requires
+`RECOVERY_ADMIN_SECRET` (at least 32 characters).
 
 * Backend-signed and sponsored transactions
 * Internal user-to-user transfers
@@ -175,6 +312,7 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 ```env
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
 WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
+EXPORT_SIGNING_SECRET="your-secure-export-signing-secret-min-32-chars-long"
 ```
 
 #### Boot-Time Configuration Validation
@@ -186,6 +324,10 @@ To guarantee security, the application validates critical environment variables 
   - **Length**: Must be at least **32 characters** long.
   - **Security**: Must **not** match the default placeholder string (`your-secret-encryption-key-min-32-chars`).
   - **Behavior**: If validation fails, the application throws an error and fails to boot.
+* **`EXPORT_SIGNING_SECRET`**: Secret used to sign export download tokens.
+  - **Required in production**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: No hardcoded fallback secret is allowed; startup fails closed when it is missing.
 
 **Examples:**
 
@@ -485,9 +627,22 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
 - `GET /wallets/:id` - get wallet by id
 - `GET /wallets/:id/status` - get wallet status (#185)
+- `GET /wallets/address/:publicKey?network=TESTNET` - find wallet by Stellar public key (address uniqueness lookup)
 - `PATCH /wallets/:id` - update wallet status
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Wallet Nickname
+
+Wallets can carry a short, optional human-readable label.
+
+- `PATCH /wallets/:id/nickname` - set or clear the wallet nickname
+
+**Request body**:
+```json
+{ "nickname": "Savings wallet" }
+```
+Pass `null` (or omit the field) to clear an existing nickname. The label is capped at 100 characters. The `nickname` field is included in all wallet responses.
 
 ### Orchestration Endpoints
 
@@ -520,3 +675,86 @@ Testing
 
 - Unit tests are under `src/**/*spec.ts`.
 - E2E tests are under `test/` and use Jest + Supertest.
+
+---
+
+## Transactions API
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/transactions` | Create a transaction (PENDING state) |
+| `GET` | `/transactions` | List transactions with filters and pagination (#497) |
+| `GET` | `/transactions/:id` | Get a transaction by ID |
+| `GET` | `/transactions/wallet/:walletId` | List transactions for a wallet |
+| `GET` | `/transactions/stellar/:hash` | Find a transaction by Stellar hash |
+| `PATCH` | `/transactions/:id/status` | Update transaction status |
+| `POST` | `/transactions/build` | Build an unsigned Stellar transaction XDR |
+| `POST` | `/transactions/fee-bump` | Wrap an inner signed transaction with a fee-bump envelope and submit to Stellar |
+
+### Filtering Transactions (#497)
+
+`GET /transactions` accepts the following query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `senderWalletId` | string | Filter by sender wallet ID |
+| `receiverWalletId` | string | Filter by receiver wallet ID |
+| `status` | enum | Filter by status: `PENDING`, `SUBMITTED`, `CONFIRMED`, `FAILED` |
+| `assetType` | string | Filter by asset type (e.g. `NATIVE`, `CREDIT_ALPHANUM4`) |
+| `assetCode` | string | Filter by asset code (e.g. `USDC`) |
+| `minAmount` | string | Minimum amount, inclusive |
+| `maxAmount` | string | Maximum amount, inclusive |
+| `createdAfter` | ISO 8601 | Return transactions created on or after this timestamp |
+| `createdBefore` | ISO 8601 | Return transactions created on or before this timestamp |
+| `memo` | string | Case-insensitive substring search on memo field |
+| `limit` | number | Max records to return (1–100, default 20) |
+| `offset` | number | Records to skip for pagination (default 0) |
+
+Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
+
+### Transaction Status Lifecycle (#498)
+
+Internal transaction statuses and their Horizon result mappings:
+
+| Status | Description | Horizon mapping |
+|--------|-------------|-----------------|
+| `PENDING` | Created, not yet submitted | — |
+| `SUBMITTED` | Submitted to Stellar, awaiting ledger inclusion | HTTP 202, `result_code: tx_queued` |
+| `CONFIRMED` | Included in a ledger | `successful: true`, `result_code: tx_success` / `tx_fee_bump_inner_success` |
+| `FAILED` | Rejected or expired | `successful: false`, any other `result_code` |
+
+`mapHorizonResultToStatus()` in `src/transactions/horizon-result.mapper.ts` performs the mapping. Priority order:
+
+1. HTTP 202 → `SUBMITTED` (Horizon accepted, not yet ledger-confirmed)
+2. `successful: true` → `CONFIRMED`
+3. `result_code` switch (see mapper for full list)
+4. Default → `FAILED`
+
+### Wallet Create Rollback (#494)
+
+`WalletsService.createWallet()` and `WalletCreationOrchestrator.createWallet()` use a two-phase write inside a Prisma transaction:
+
+1. Wallet is inserted with status `PROVISIONING`.
+2. Status is transitioned to `ACTIVE` within the same transaction.
+
+If key generation, DB persistence, or activation throws, the Prisma transaction rolls back automatically — no partial wallet record is left in the database. Stale `PROVISIONING` wallets (from crashed processes) are cleaned up via `cleanupStaleProvisioningWallets()`.
+
+Testnet Friendbot funding is performed outside the transaction and is non-blocking; a Friendbot failure does not roll back the wallet.
+
+### Wallet List Pagination (#496)
+
+`GET /wallets` returns a paginated envelope:
+
+```json
+{
+  "data": [...],
+  "total": 42,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+Query parameters: `userId`, `network`, `status`, `includeArchived` (default `false`), `limit` (max 100, default 20), `offset` (default 0). Archived wallets are excluded by default; pass `includeArchived=true` to include them. `encryptedSecret` is never present in list responses.

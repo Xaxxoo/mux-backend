@@ -9,7 +9,6 @@ import {
   Query,
   HttpCode,
   HttpStatus,
-  BadRequestException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -22,22 +21,29 @@ import {
 } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
-import { DeliveryStatus } from './domain/webhook-events';
-
-const MAX_DELIVERIES_LIMIT = 200;
+import { WebhookDlqAlertService } from './webhook-dlq-alert.service';
 import { CreateWebhookEndpointDto } from './dto/create-webhook-endpoint.dto';
 import { UpdateWebhookEndpointDto } from './dto/update-webhook-endpoint.dto';
+import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import { UpdateWebhookSubscriptionsDto } from './dto/update-webhook-subscriptions.dto';
+import { WebhookEventType } from './domain/webhook-events';
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { FeatureFlag } from '../common/feature-flags/feature-flag.guard';
+import {
+  TenantScopeGuard,
+  TenantScoped,
+} from '../common/guards/tenant-scope.guard';
+import { WebhookSignatureGuard } from './webhook-signature.guard';
 
 @ApiTags('webhooks')
 @Controller('webhooks')
-@UseGuards(FeatureFlagGuard)
+@UseGuards(FeatureFlagGuard, TenantScopeGuard)
 @FeatureFlag('webhooks_enabled')
 export class WebhookController {
   constructor(
     private readonly webhookService: WebhookService,
     private readonly webhookDispatcher: WebhookDispatcherService,
+    private readonly dlqAlertService: WebhookDlqAlertService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -102,11 +108,35 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'List webhook endpoints for a project' })
-  @ApiParam({ name: 'projectId', description: 'Project ID', example: 'project-uuid' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
-  @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'DISABLED', 'FAILED'], description: 'Filter by endpoint status' })
-  @ApiQuery({ name: 'event', required: false, example: 'wallet.created', description: 'Filter by subscribed event type' })
+  @ApiParam({
+    name: 'projectId',
+    description: 'Project ID',
+    example: 'project-uuid',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 20,
+    description: 'Items per page (max 100)',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['ACTIVE', 'DISABLED', 'FAILED'],
+    description: 'Filter by endpoint status',
+  })
+  @ApiQuery({
+    name: 'event',
+    required: false,
+    example: 'wallet.created',
+    description: 'Filter by subscribed event type',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of webhook endpoints',
@@ -132,23 +162,16 @@ export class WebhookController {
     },
   })
   @Get('endpoints/project/:projectId')
+  @TenantScoped('projectId')
   async listEndpoints(
     @Param('projectId') projectId: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
+    @Query() filter: WebhookFilterDto,
   ) {
-    const pageNumber = Math.max(1, parseInt(page || '1', 10));
-    const pageLimit = Math.min(100, Math.max(1, parseInt(limit || '20', 10)));
-
-    const result = await this.webhookService.listEndpoints(
-      projectId,
-      pageNumber,
-      pageLimit,
-    );
+    const result = await this.webhookService.listEndpoints(projectId, filter);
 
     return {
-      page: pageNumber,
-      limit: pageLimit,
+      page: result.page,
+      limit: result.limit,
       total: result.total,
       endpoints: result.endpoints.map((e) => ({
         id: e.id,
@@ -171,7 +194,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Get a specific webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 200,
     description: 'Webhook endpoint details (secret is never returned here)',
@@ -223,7 +250,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Update a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiBody({
     type: UpdateWebhookEndpointDto,
     examples: {
@@ -295,7 +326,11 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Delete a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 204,
     description: 'Endpoint deleted successfully (no body returned)',
@@ -325,10 +360,15 @@ export class WebhookController {
       'Generates a new HMAC-SHA256 signing secret for the endpoint. ' +
       'The new secret is **only returned once** in this response — store it immediately.',
   })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
   @ApiResponse({
     status: 200,
-    description: 'New secret returned. This is the only time it will be visible.',
+    description:
+      'New secret returned. This is the only time it will be visible.',
     example: {
       secret: 'whsec_newSecretValue123...',
       rotatedAt: '2024-06-24T15:00:00.000Z',
@@ -359,9 +399,23 @@ export class WebhookController {
   // ---------------------------------------------------------------------------
 
   @ApiOperation({ summary: 'Get delivery history for a webhook endpoint' })
-  @ApiParam({ name: 'id', description: 'Webhook endpoint ID', example: 'endpoint-uuid' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 50, description: 'Items per page (max 100)' })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 50,
+    description: 'Items per page (max 100)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated delivery history',
@@ -402,16 +456,6 @@ export class WebhookController {
   @Get('endpoints/:id/deliveries')
   async getDeliveries(
     @Param('id') id: string,
-    @Query('limit') limit?: string,
-    @Query('status') status?: string,
-  ) {
-    const deliveryLimit = this.parseLimit(limit);
-    const deliveryStatus = this.parseStatus(status);
-
-    const deliveries = await this.webhookService.getDeliveries(
-      id,
-      deliveryLimit,
-      deliveryStatus,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -448,6 +492,212 @@ export class WebhookController {
     };
   }
 
+  /**
+   * Lists dead-lettered deliveries (exhausted all retries)
+   */
+  @Get('deliveries/dead-letter')
+  async getDeadLetters(
+    @Query('projectId') projectId?: string,
+    @Query('endpointId') endpointId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const deadLetters = await this.webhookService.getDeadLetters({
+      projectId,
+      endpointId,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+
+    return {
+      deadLetters: deadLetters.map((d) => ({
+        id: d.id,
+        endpointId: d.endpointId,
+        endpointUrl: (d as any).endpoint?.url,
+        eventId: d.eventId,
+        eventType: d.eventType,
+        attempts: d.attempts,
+        maxAttempts: d.maxAttempts,
+        responseStatus: d.responseStatus,
+        errorMessage: d.errorMessage,
+        firstAttemptAt: d.firstAttemptAt,
+        lastAttemptAt: d.lastAttemptAt,
+        createdAt: d.createdAt,
+      })),
+    };
+  }
+
+  /**
+   * Requeues a dead-lettered delivery and immediately attempts redelivery
+   */
+  @Post('deliveries/:id/replay')
+  @HttpCode(HttpStatus.OK)
+  async replayDeadLetter(@Param('id') id: string) {
+    await this.webhookService.replayDeadLetter(id);
+    const result = await this.webhookDispatcher.processDeliveries();
+
+    return {
+      replayed: id,
+      processed: result.delivered + result.failed + result.retrying,
+      delivered: result.delivered,
+      failed: result.failed,
+      retrying: result.retrying,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/endpoints/:id/subscriptions
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Get subscribed event types for a webhook endpoint',
+    description:
+      'Returns the list of event types the endpoint is currently subscribed to, ' +
+      'along with a reference of all valid event types.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Current event subscriptions',
+    schema: {
+      example: {
+        endpointId: 'endpoint-uuid',
+        events: ['wallet.created', 'transaction.confirmed'],
+        allValidEvents: [
+          'wallet.created',
+          'wallet.activated',
+          'transaction.confirmed',
+        ],
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Endpoint not found',
+    example: { statusCode: 404, message: 'Webhook endpoint endpoint-uuid not found' },
+  })
+  @Get('endpoints/:id/subscriptions')
+  async getSubscribedEvents(@Param('id') id: string) {
+    const events = await this.webhookService.getSubscribedEvents(id);
+    return {
+      endpointId: id,
+      events,
+      allValidEvents: Object.values(WebhookEventType),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // PUT /webhooks/endpoints/:id/subscriptions
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'Replace subscribed event types for a webhook endpoint',
+    description:
+      'Replaces all subscribed event types with the supplied list. ' +
+      'All values must be members of the known WebhookEventType enum. ' +
+      'Providing an unknown event type returns 400 Bad Request.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Webhook endpoint ID',
+    example: 'endpoint-uuid',
+  })
+  @ApiBody({
+    type: UpdateWebhookSubscriptionsDto,
+    examples: {
+      default: {
+        value: {
+          events: ['wallet.created', 'transaction.confirmed'],
+        },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Updated event subscriptions',
+    schema: {
+      example: {
+        endpointId: 'endpoint-uuid',
+        events: ['wallet.created', 'transaction.confirmed'],
+        updatedAt: '2026-07-30T00:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'One or more event types are not valid WebhookEventType values',
+    example: {
+      statusCode: 400,
+      message: 'Unknown event type(s): foo.bar. Valid values: wallet.created, ...',
+      error: 'Bad Request',
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Endpoint not found',
+  })
+  @Put('endpoints/:id/subscriptions')
+  @HttpCode(HttpStatus.OK)
+  async updateSubscribedEvents(
+    @Param('id') id: string,
+    @Body() dto: UpdateWebhookSubscriptionsDto,
+  ) {
+    const events = await this.webhookService.updateSubscribedEvents(id, dto.events);
+    return {
+      endpointId: id,
+      events,
+      updatedAt: new Date(),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/event-types  — reference list of all valid event types
+  // ---------------------------------------------------------------------------
+
+  @ApiOperation({
+    summary: 'List all valid webhook event types',
+    description:
+      'Returns the complete set of event type strings that can be used ' +
+      'when creating or updating webhook endpoint subscriptions.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Enum of all supported event types',
+    schema: {
+      example: {
+        eventTypes: [
+          'wallet.created',
+          'wallet.activated',
+          'wallet.suspended',
+          'wallet.rotated',
+          'transaction.created',
+          'transaction.pending',
+          'transaction.confirmed',
+          'transaction.failed',
+          'balance.updated',
+          'balance.low',
+          'balance.mismatch',
+          'user.created',
+          'user.updated',
+          'auth.user_authenticated',
+          'auth.new_user_registered',
+          'auth.authentication_failed',
+        ],
+      },
+    },
+  })
+  @Get('event-types')
+  listEventTypes() {
+    return {
+      eventTypes: Object.values(WebhookEventType),
+    };
+  }
+
+  /**
+   * Manually triggers webhook delivery processing (admin only)
+   */
   // ---------------------------------------------------------------------------
   // POST /webhooks/process-deliveries
   // ---------------------------------------------------------------------------
@@ -481,43 +731,110 @@ export class WebhookController {
     };
   }
 
-  /**
-   * Parses and validates the `limit` query param for delivery history
-   */
-  private parseLimit(limit?: string): number {
-    if (limit === undefined) {
-      return 50;
-    }
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/dlq/status  — DLQ depth + alert check (admin)
+  // ---------------------------------------------------------------------------
 
-    const parsed = Number(limit);
+  @ApiOperation({
+    summary: 'Check DLQ depth and evaluate alert thresholds (admin)',
+    description:
+      'Returns the current dead-letter queue depth, percentage of failed deliveries, ' +
+      'age of the oldest item, and whether any alert thresholds have been breached. ' +
+      'This also triggers an immediate threshold evaluation identical to the background poller.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'DLQ status with alert information',
+    schema: {
+      example: {
+        dlqDepth: 3,
+        totalDeliveries: 120,
+        dlqPercentage: 2.5,
+        oldestDlqItemAgeMs: 450000,
+        thresholdBreached: false,
+        alerts: [],
+        checkedAt: '2026-07-27T05:00:00.000Z',
+        thresholds: {
+          absoluteThreshold: 50,
+          percentageThreshold: 10,
+          ageThresholdMs: 3600000,
+        },
+      },
+    },
+  })
+  @Get('dlq/status')
+  async getDlqStatus() {
+    const [status, thresholds] = await Promise.all([
+      this.dlqAlertService.checkDlqDepth(),
+      Promise.resolve(this.dlqAlertService.getThresholds()),
+    ]);
 
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_DELIVERIES_LIMIT) {
-      throw new BadRequestException(
-        `limit must be an integer between 1 and ${MAX_DELIVERIES_LIMIT}`,
-      );
-    }
-
-    return parsed;
+    return {
+      dlqDepth: status.dlqDepth,
+      totalDeliveries: status.totalDeliveries,
+      dlqPercentage: Number(status.dlqPercentage.toFixed(4)),
+      oldestDlqItemAgeMs: status.oldestDlqItemAgeMs,
+      thresholdBreached: status.thresholdBreached,
+      alerts: status.alerts,
+      checkedAt: status.checkedAt,
+      thresholds,
+    };
   }
 
-  /**
-   * Parses and validates the `status` query param for delivery history
-   */
-  private parseStatus(status?: string): DeliveryStatus | undefined {
-    if (status === undefined) {
-      return undefined;
-    }
+  // ---------------------------------------------------------------------------
+  // GET /webhooks/dlq/depth  — lightweight depth-only probe
+  // ---------------------------------------------------------------------------
 
-    const normalized = status.toUpperCase();
+  @ApiOperation({
+    summary: 'Get current DLQ depth (lightweight probe)',
+    description:
+      'Returns only the count of dead-lettered deliveries without triggering ' +
+      'the full alert evaluation. Suitable for health probes and dashboards.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'DLQ depth metrics',
+    schema: {
+      example: {
+        depth: 3,
+        total: 120,
+        percentage: 2.5,
+      },
+    },
+  })
+  @Get('dlq/depth')
+  async getDlqDepth() {
+    return this.dlqAlertService.getDlqDepth();
+  }
 
-    if (
-      !Object.values(DeliveryStatus).includes(normalized as DeliveryStatus)
-    ) {
-      throw new BadRequestException(
-        `status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
-      );
-    }
+  // ---------------------------------------------------------------------------
+  // POST /webhooks/inbound
+  // ---------------------------------------------------------------------------
 
-    return normalized as DeliveryStatus;
+  @ApiOperation({
+    summary: 'Receive inbound webhook',
+    description:
+      'Receives and verifies an inbound webhook notification signed with HMAC-SHA256.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Webhook received and processed successfully',
+    schema: {
+      example: {
+        received: true,
+      },
+    },
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid webhook signature',
+  })
+  @UseGuards(WebhookSignatureGuard)
+  @Post('inbound')
+  @HttpCode(HttpStatus.OK)
+  async receiveInboundWebhook(@Body() body: unknown) {
+    return {
+      received: true,
+    };
   }
 }

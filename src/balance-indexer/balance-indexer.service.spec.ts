@@ -4,7 +4,10 @@ import { NotFoundException } from '@nestjs/common';
 import { BalanceIndexerService } from './balance-indexer.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { BalanceRepository } from './balance.repository';
+import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
 import { AssetType, BalanceSyncStatus } from './domain/balance.model';
 
 const WALLET_ID = 'wallet-123';
@@ -28,67 +31,29 @@ function makeBalance(overrides: Partial<any> = {}) {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
-import { PrismaService } from '../prisma/prisma.service';
-import { AssetType, BalanceSyncStatus } from './domain/balance.model';
-import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
-import { RequestContextService } from '../common/request-context/request-context.service';
-import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+  };
+}
 
-const WALLET_ID = 'wallet-123';
-const PUBLIC_KEY = 'GABC123';
-
-const nativeAsset = { type: AssetType.NATIVE };
-const nativeBalance = {
-  id: 'bal-1',
-  walletId: WALLET_ID,
-  assetType: AssetType.NATIVE,
-  assetCode: null,
-  assetIssuer: null,
-  balance: '100.0000000',
-  syncStatus: BalanceSyncStatus.SYNCED,
-  lastSyncedAt: new Date(),
-  lastSyncedLedger: 1000,
-  lastReconciledAt: null,
-  reconciliationAttempts: 0,
-  onChainBalance: '100.0000000',
-  mismatchDetectedAt: null,
-  createdAt: new Date(),
-  updatedAt: new Date(),
+const mockPrisma = {
+  walletBalance: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+    updateMany: jest.fn(),
+    upsert: jest.fn(),
+  },
+  wallet: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+  },
+  balanceSyncJob: {
+    create: jest.fn().mockResolvedValue({ id: 'job-1' }),
+    update: jest.fn().mockResolvedValue({}),
+  },
 };
-
-const makeBalanceUpdate = (balance = '100.0000000') => ({
-  walletId: WALLET_ID,
-  asset: nativeAsset,
-  balance,
-  ledgerSequence: 1000,
-  timestamp: new Date(),
-});
 
 describe('BalanceIndexerService', () => {
   let service: BalanceIndexerService;
   let prisma: jest.Mocked<PrismaService>;
-  let horizonService: jest.Mocked<StellarHorizonService>;
-
-  const mockPrisma = {
-    walletBalance: {
-      findUnique: jest.fn(),
-      findMany: jest.fn(),
-      updateMany: jest.fn(),
-      upsert: jest.fn(),
-    },
-    wallet: {
-      findUnique: jest.fn(),
-      findMany: jest.fn(),
-    },
-    balanceSyncJob: {
-      create: jest.fn().mockResolvedValue({ id: 'job-1' }),
-      update: jest.fn().mockResolvedValue({}),
-    },
-  };
-}
-
-describe('BalanceIndexerService', () => {
-  let service: BalanceIndexerService;
   let repo: jest.Mocked<BalanceRepository>;
   let horizonService: jest.Mocked<StellarHorizonService>;
   let webhookEmitter: jest.Mocked<WebhookEventEmitterService>;
@@ -96,15 +61,6 @@ describe('BalanceIndexerService', () => {
   const mockHorizon = {
     getAccountBalances: jest.fn(),
     accountExists: jest.fn(),
-  };
-
-  const mockConfig = {
-    get: jest.fn().mockReturnValue(300_000),
-  };
-
-  const mockWebhookEmitter = {
-    emitBalanceUpdated: jest.fn().mockResolvedValue(undefined),
-    emitBalanceMismatch: jest.fn().mockResolvedValue(undefined),
   };
 
   const mockRequestContext = {
@@ -140,8 +96,10 @@ describe('BalanceIndexerService', () => {
 
     configService = {
       get: jest.fn((key: string, defaultValue?: any) => {
-        if (key === 'STELLAR_HORIZON_URL') return 'https://horizon-testnet.stellar.org';
-        if (key === 'BALANCE_STALE_THRESHOLD_MS') return defaultValue ?? 300_000;
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
+        if (key === 'BALANCE_STALE_THRESHOLD_MS')
+          return defaultValue ?? 300_000;
         return defaultValue;
       }),
     } as any;
@@ -152,10 +110,11 @@ describe('BalanceIndexerService', () => {
         BalanceIndexerService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: StellarHorizonService, useValue: mockHorizon },
-        { provide: ConfigService, useValue: mockConfig },
-        { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
+        { provide: ConfigService, useValue: configService },
+        { provide: WebhookEventEmitterService, useValue: webhookEmitter },
         { provide: RequestContextService, useValue: mockRequestContext },
         { provide: BalanceIndexerMetricsService, useValue: mockMetrics },
+        { provide: BalanceRepository, useValue: repo },
       ],
     }).compile();
 
@@ -195,7 +154,8 @@ describe('BalanceIndexerService', () => {
 
     it('throws when BALANCE_STALE_THRESHOLD_MS is zero', () => {
       configService.get.mockImplementation((key: string, def?: any) => {
-        if (key === 'STELLAR_HORIZON_URL') return 'https://horizon-testnet.stellar.org';
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
         if (key === 'BALANCE_STALE_THRESHOLD_MS') return 0;
         return def;
       });
@@ -235,7 +195,11 @@ describe('BalanceIndexerService', () => {
       const staleDate = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago
       const balance = makeBalance({ lastSyncedAt: staleDate });
       repo.findOne.mockResolvedValue(balance);
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([]);
 
@@ -260,7 +224,11 @@ describe('BalanceIndexerService', () => {
     });
 
     it('sets zero balances when account is not on-chain', async () => {
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(false);
       repo.upsertNativeZero.mockResolvedValue(undefined);
 
@@ -272,7 +240,11 @@ describe('BalanceIndexerService', () => {
     });
 
     it('syncs balances and returns SYNCED status when no mismatches', async () => {
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -296,7 +268,11 @@ describe('BalanceIndexerService', () => {
     // #387 — Emit domain events
     it('emits balance.updated when balance value changes', async () => {
       const existingBalance = makeBalance({ balance: '50.0000000' });
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -324,7 +300,11 @@ describe('BalanceIndexerService', () => {
 
     it('does NOT emit balance.updated when balance is unchanged', async () => {
       const existingBalance = makeBalance({ balance: '100.0000000' });
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.accountExists.mockResolvedValue(true);
       horizonService.getAccountBalances.mockResolvedValue([
         {
@@ -361,7 +341,11 @@ describe('BalanceIndexerService', () => {
     it('returns matches=true and clears mismatch when balances are equal', async () => {
       const balance = makeBalance({ balance: '100.0000000' });
       repo.findOne.mockResolvedValue(balance);
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.getAccountBalances.mockResolvedValue([
         {
           walletId: WALLET_ID,
@@ -388,7 +372,11 @@ describe('BalanceIndexerService', () => {
       repo.findOne
         .mockResolvedValueOnce(balance) // getBalance call
         .mockResolvedValueOnce(balance); // applyBalanceUpdate findOne call
-      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
       horizonService.getAccountBalances.mockResolvedValue([
         {
           walletId: WALLET_ID,

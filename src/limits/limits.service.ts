@@ -10,10 +10,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
+import { LimitWarningEvent } from './events/limit-warning.event';
 import { LimitsResponseDto } from './dto/limits-response.dto';
 import { retryWithBackoff } from '../common/utils/retry';
 import { MetricsService } from '../metrics/metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
+
+/** Emit a warning once spending reaches this fraction of a limit, without blocking */
+const WARNING_THRESHOLD_RATIO = 0.8;
 
 export const LIMIT_ERROR_CODES = {
   PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
@@ -43,27 +47,63 @@ export class LimitsService {
     private readonly requestContext: RequestContextService,
   ) {}
 
-  async setLimits(walletId: string, daily: number, perTx: number) {
-    const existing = await retryWithBackoff(
+  private async getDailyUsageTotal(
+    walletId: string,
+    startOfDay: Date,
+  ): Promise<number> {
+    const txns = await retryWithBackoff(
       () =>
-        this.prisma.walletLimit.findUnique({
-          where: { walletId },
+        this.prisma.transaction.findMany({
+          where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+          select: { amount: true },
         }),
       3,
       100,
       this.logger,
     );
 
-    const result = await retryWithBackoff(
+    const paymentRows = this.prisma.payment?.findMany
+      ? await retryWithBackoff(
+          () =>
+            this.prisma.payment.findMany({
+              where: { createdAt: { gte: startOfDay } },
+              select: { amount: true },
+            }),
+          3,
+          100,
+          this.logger,
+        )
+      : [];
+
+    return (
+      txns.reduce((sum, t) => sum + Number(t.amount || 0), 0) +
+      paymentRows.reduce((sum, p) => sum + Number(p.amount || 0), 0)
+    );
+  }
+
+  async setLimits(walletId: string, daily: number, perTx: number) {
+    // Read-then-write is wrapped in a single Prisma transaction so a
+    // concurrent setLimits call for the same wallet can't interleave
+    // between the existence check and the upsert, which would otherwise
+    // produce incorrect limit.updated diffs (comparing against stale data).
+    const { existing, result } = await retryWithBackoff(
       () =>
-        this.prisma.walletLimit.upsert({
-          where: { walletId },
-          update: {
-            dailyLimit: daily,
-            perTransactionLimit: perTx,
-            deletedAt: null,
-          },
-          create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+        this.prisma.$transaction(async (tx) => {
+          const existing = await tx.walletLimit.findUnique({
+            where: { walletId },
+          });
+
+          const result = await tx.walletLimit.upsert({
+            where: { walletId },
+            update: {
+              dailyLimit: daily,
+              perTransactionLimit: perTx,
+              deletedAt: null,
+            },
+            create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+          });
+
+          return { existing, result };
         }),
       3,
       100,
@@ -136,26 +176,13 @@ export class LimitsService {
       perTransactionLimit: limit.perTransactionLimit,
     };
 
-    // Calculate remaining daily limit if a positive daily limit is configured
+    // Calculate remaining daily limit if a positive daily limit is configured.
+    // Daily usage includes both wallet transactions and payment rows created by the payments API.
     if (limit.dailyLimit > 0) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
 
-      const txns = await retryWithBackoff(
-        () =>
-          this.prisma.transaction.findMany({
-            where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
-            select: { amount: true },
-          }),
-        3,
-        100,
-        this.logger,
-      );
-
-      const currentDailyTotal = txns.reduce(
-        (sum, t) => sum + Number(t.amount),
-        0,
-      );
+      const currentDailyTotal = await this.getDailyUsageTotal(walletId, startOfDay);
       response.remainingDailyLimit = Math.max(
         0,
         limit.dailyLimit - currentDailyTotal,
@@ -271,67 +298,34 @@ export class LimitsService {
       return;
     }
 
-    const spendingLimits = await retryWithBackoff(
-      () =>
-        this.prisma.spendingLimit.findMany({
-          where: {
-            userId: wallet.userId,
-            isActive: true,
-            OR: assetCode
-              ? [{ assetCode }, { assetCode: null }]
-              : [{ assetCode: null }],
-          },
-        }),
-      3,
-      100,
-      this.logger,
-    );
-
-    for (const limit of spendingLimits) {
-      const perTransactionLimit = Number(limit.perTransactionLimit);
-      if (amount > perTransactionLimit) {
-        this.metrics.incrementLimitExceeded('perTransaction');
-        this.metrics.incrementLimitChecks('denied');
-        this.eventEmitter.emit(
-          'limit.exceeded',
-          new LimitExceededEvent(
-            walletId,
-            'perTransaction',
-            perTransactionLimit,
-            amount,
-            new Date(),
-          ),
-        );
-        throw new LimitExceededException(
-          LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
-          `Per-transaction limit exceeded for asset. Limit: ${perTransactionLimit}`,
-        );
-      }
-
-      const periodStart = this.getPeriodStart(limit.period as LimitPeriod);
-      const txns = await retryWithBackoff(
-        () =>
-          this.prisma.transaction.findMany({
-            where: {
-              senderWalletId: walletId,
-              createdAt: { gte: periodStart },
-              ...(assetCode ? { assetCode } : {}),
-            },
-            select: { amount: true },
-          }),
-        3,
-        100,
-        this.logger,
+    if (
+      limits.perTransactionLimit > 0 &&
+      amount >= limits.perTransactionLimit * WARNING_THRESHOLD_RATIO
+    ) {
+      this.logger.warn(
+        `Wallet ${walletId} nearing per-transaction limit: amount=${amount} limit=${limits.perTransactionLimit}`,
       );
-
-      const currentPeriodTotal = txns.reduce(
-        (sum, t) => sum + Number(t.amount),
-        0,
+      this.eventEmitter.emit(
+        'limit.warning',
+        new LimitWarningEvent(
+          walletId,
+          'perTransaction',
+          limits.perTransactionLimit,
+          amount,
+          new Date(),
+        ),
       );
+    }
 
-      const periodLimit = Number(limit.periodLimit);
-      if (currentPeriodTotal + amount > periodLimit) {
-        this.metrics.incrementLimitExceeded('period');
+    // Enforce daily cap only when a positive daily limit is configured.
+    // Total usage includes wallet transactions and payment API rows created today.
+    if (limits.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+
+      const currentDailyTotal = await this.getDailyUsageTotal(walletId, startOfDay);
+      if (currentDailyTotal + amount > limits.dailyLimit) {
+        this.metrics.incrementLimitExceeded('daily');
         this.metrics.incrementLimitChecks('denied');
         this.eventEmitter.emit(
           'limit.exceeded',
@@ -346,6 +340,25 @@ export class LimitsService {
         throw new LimitExceededException(
           LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
           `Period limit exceeded for asset. Limit: ${periodLimit}, Used: ${currentPeriodTotal}`,
+        );
+      }
+
+      if (
+        currentDailyTotal + amount >=
+        limits.dailyLimit * WARNING_THRESHOLD_RATIO
+      ) {
+        this.logger.warn(
+          `Wallet ${walletId} nearing daily limit: projected=${currentDailyTotal + amount} limit=${limits.dailyLimit}`,
+        );
+        this.eventEmitter.emit(
+          'limit.warning',
+          new LimitWarningEvent(
+            walletId,
+            'daily',
+            limits.dailyLimit,
+            currentDailyTotal + amount,
+            new Date(),
+          ),
         );
       }
     }

@@ -18,6 +18,7 @@ export interface ErrorResponse {
   method: string;
   message: string | string[];
   error?: string;
+  errorCode?: string;
   details?: Record<string, any>;
   requestId?: string;
 }
@@ -69,10 +70,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       const exceptionResponse = exception.getResponse();
 
       // Extract message and details from exception response
-      const { message, error, details } = this.parseHttpExceptionResponse(
-        exceptionResponse,
-        status,
-      );
+      const { message, error, errorCode, details } =
+        this.parseHttpExceptionResponse(exceptionResponse, status);
 
       return {
         statusCode: status,
@@ -81,6 +80,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         method,
         message,
         error,
+        ...(errorCode && { errorCode }),
         ...(details && { details }),
         ...(request.headers['x-request-id'] && {
           requestId: request.headers['x-request-id'] as string,
@@ -126,6 +126,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
   ): {
     message: string | string[];
     error: string;
+    errorCode?: string;
     details?: Record<string, any>;
   } {
     // If response is a string, use it as the message
@@ -142,6 +143,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     return {
       message: responseObj.message || 'An error occurred',
       error: responseObj.error || this.getErrorNameFromStatus(status),
+      ...(responseObj.errorCode && { errorCode: responseObj.errorCode }),
       ...(responseObj.details && { details: responseObj.details }),
     };
   }

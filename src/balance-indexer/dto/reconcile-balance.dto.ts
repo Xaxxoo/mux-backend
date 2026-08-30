@@ -1,6 +1,7 @@
 import { IsEnum, IsOptional, IsString, IsNotEmpty } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { AssetType } from '../domain/balance.model';
+import { IsStellarPublicKey } from '../../common/stellar/is-stellar-public-key.validator';
 
 export class ReconcileBalanceDto {
   @ApiProperty({
@@ -26,7 +27,7 @@ export class ReconcileBalanceDto {
     description: 'Asset issuer account ID (required if assetType is CREDIT_ALPHANUM4 or CREDIT_ALPHANUM12)',
     required: false,
   })
-  @IsString({ message: 'assetIssuer must be a string' })
   @IsOptional()
+  @IsStellarPublicKey()
   assetIssuer?: string;
 }

@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 import { LimitsService } from './limits.service';
 import { SetLimitsDto } from './dto/set-limits.dto';
+import { UpdateLimitsDto } from './dto/update-limits.dto';
 import { LimitsResponseDto } from './dto/limits-response.dto';
 import {
   FeatureFlagGuard,
@@ -34,7 +35,7 @@ export class LimitsController {
 
   @ApiOperation({
     summary: 'Set wallet transaction and daily limits',
-    description: 'Set or update daily and per-transaction limits for a wallet. Requires API key authentication. Emits limit.updated events for each limit changed.',
+    description: 'Set or update daily and per-transaction limits for a wallet. The read-check and write are performed atomically in a single Prisma transaction, so concurrent requests for the same wallet cannot race. Requires API key authentication. Emits limit.updated events for each limit changed.',
   })
   @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
   @ApiBody({

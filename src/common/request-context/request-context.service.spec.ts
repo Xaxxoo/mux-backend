@@ -48,4 +48,57 @@ describe('RequestContextService', () => {
       }),
     ]);
   });
+
+  describe('clientVersion', () => {
+    it('should store and retrieve the client version', async () => {
+      await new Promise<void>((resolve) => {
+        RequestContextService.run(
+          { requestId: 'req-1', clientVersion: '2.4.1' },
+          () => {
+            expect(service.getClientVersion()).toBe('2.4.1');
+            resolve();
+          },
+        );
+      });
+    });
+
+    it('should return undefined when no client version is set', async () => {
+      await new Promise<void>((resolve) => {
+        RequestContextService.run({ requestId: 'req-1' }, () => {
+          expect(service.getClientVersion()).toBeUndefined();
+          resolve();
+        });
+      });
+    });
+
+    it('should return undefined outside of any request context', () => {
+      expect(service.getClientVersion()).toBeUndefined();
+      expect(RequestContextService.getCurrentClientVersion()).toBeUndefined();
+    });
+
+    it('setClientVersion updates the client version within the current context', async () => {
+      await new Promise<void>((resolve) => {
+        RequestContextService.run({ requestId: 'req-1' }, () => {
+          service.setClientVersion('1.0.0');
+          expect(service.getClientVersion()).toBe('1.0.0');
+          expect(service.getRequestId()).toBe('req-1');
+          resolve();
+        });
+      });
+    });
+
+    it('static getCurrentClientVersion reads the same store as getClientVersion', async () => {
+      await new Promise<void>((resolve) => {
+        RequestContextService.run(
+          { requestId: 'req-1', clientVersion: '5.6.7' },
+          () => {
+            expect(RequestContextService.getCurrentClientVersion()).toBe(
+              '5.6.7',
+            );
+            resolve();
+          },
+        );
+      });
+    });
+  });
 });

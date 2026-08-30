@@ -9,7 +9,12 @@ import {
   Query,
   BadRequestException,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import {
   ApiTags,
   ApiOperation,
@@ -19,9 +24,16 @@ import {
   ApiResponse,
 } from '@nestjs/swagger';
 import { RecoveryService } from './recovery.service';
+import { AdminRecoveryService } from './admin-recovery.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
 import { RecoveryStatus } from './domain/recovery.model';
+import { RecoveryAdminGuard } from './recovery-admin.guard';
+
+interface RecoveryAdminRequest {
+  approvalNotes?: string;
+  rejectionReason?: string;
+}
 
 function parsePaginationParam(
   value: string | undefined,
@@ -44,7 +56,10 @@ function parsePaginationParam(
 @ApiTags('recovery')
 @Controller('recovery')
 export class RecoveryController {
-  constructor(private readonly recoveryService: RecoveryService) {}
+  constructor(
+    private readonly recoveryService: RecoveryService,
+    private readonly adminRecoveryService: AdminRecoveryService,
+  ) {}
 
   @ApiOperation({
     summary: 'Create a recovery request',
@@ -364,6 +379,116 @@ export class RecoveryController {
   }
 
   @ApiOperation({
+    summary: 'Initiate a recovery request',
+    description:
+      'Initiate review of a PENDING recovery request, moving it to IN_REVIEW. Only requests currently in PENDING status can be initiated.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Recovery request UUID',
+    example: '660e8400-e29b-41d4-a716-446655440001',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Recovery request initiated and moved to IN_REVIEW',
+    schema: {
+      example: {
+        id: '660e8400-e29b-41d4-a716-446655440001',
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        requester: 'user_abc123',
+        status: 'IN_REVIEW',
+        metadata: { reason: 'lost_access' },
+        createdAt: '2026-06-29T12:00:00.000Z',
+        updatedAt: '2026-06-29T12:00:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description:
+      'Bad request - invalid UUID or recovery request is not in PENDING status',
+    schema: {
+      example: {
+        statusCode: 400,
+        message:
+          'Recovery request cannot be initiated from status IN_REVIEW; it must be PENDING',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Recovery request not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Recovery request not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Post(':id/initiate')
+  initiate(@Param('id', ParseUUIDPipe) id: string) {
+    return this.recoveryService.initiate(id);
+  }
+
+  @ApiOperation({
+    summary: 'Cancel a recovery request',
+    description:
+      'Cancels a recovery request by moving it to CANCELLED status. ' +
+      'Only requests in PENDING, IN_REVIEW, or APPROVED state can be cancelled. ' +
+      'Requests that are already COMPLETED, REJECTED, or CANCELLED cannot be cancelled.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Recovery request UUID',
+    example: '660e8400-e29b-41d4-a716-446655440001',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Recovery request cancelled',
+    schema: {
+      example: {
+        id: '660e8400-e29b-41d4-a716-446655440001',
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+        requester: 'user_abc123',
+        status: 'CANCELLED',
+        metadata: { reason: 'lost_access' },
+        createdAt: '2026-06-29T12:00:00.000Z',
+        updatedAt: '2026-06-29T12:30:00.000Z',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request - invalid UUID or cancellation not allowed from current status',
+    schema: {
+      example: {
+        statusCode: 400,
+        message:
+          'Recovery request cannot be cancelled from status COMPLETED. ' +
+          'Only PENDING, IN_REVIEW, or APPROVED requests can be cancelled.',
+        error: 'Bad Request',
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Recovery request not found',
+    schema: {
+      example: {
+        statusCode: 404,
+        message: 'Recovery request not found',
+        error: 'Not Found',
+      },
+    },
+  })
+  @Post(':id/cancel')
+  cancel(@Param('id', ParseUUIDPipe) id: string) {
+    return this.recoveryService.cancel(id);
+  }
+
+  @ApiOperation({
     summary: 'Delete a recovery request',
     description: 'Permanently delete a recovery request by ID.',
   })
@@ -454,5 +579,59 @@ export class RecoveryController {
   @Get('wallet/:walletId/status')
   async getWalletRecoveryStatus(@Param('walletId', ParseUUIDPipe) walletId: string) {
     return this.recoveryService.getWalletRecoveryStatus(walletId);
+  }
+
+  /**
+   * Admin endpoint: Approve a recovery request
+   */
+  @Post('admin/approve/:id')
+  @UseGuards(RecoveryAdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async approveRecovery(
+    @Param('id', ParseUUIDPipe) recoveryId: string,
+    @Body() request: RecoveryAdminRequest,
+    @Req() httpRequest: Request,
+  ) {
+    return this.adminRecoveryService.approveRecovery({
+      recoveryId,
+      adminId: (httpRequest as any).recoveryAdminId,
+      approvalNotes: request.approvalNotes,
+    });
+  }
+
+  /**
+   * Admin endpoint: Reject a recovery request
+   */
+  @Post('admin/reject/:id')
+  @UseGuards(RecoveryAdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async rejectRecovery(
+    @Param('id', ParseUUIDPipe) recoveryId: string,
+    @Body() request: RecoveryAdminRequest,
+    @Req() httpRequest: Request,
+  ) {
+    return this.adminRecoveryService.rejectRecovery({
+      recoveryId,
+      adminId: (httpRequest as any).recoveryAdminId,
+      rejectionReason: request.rejectionReason ?? '',
+    });
+  }
+
+  /**
+   * Admin endpoint: Get all pending recovery requests
+   */
+  @Get('admin/pending')
+  @UseGuards(RecoveryAdminGuard)
+  async getPendingRecoveries() {
+    return this.adminRecoveryService.getPendingRecoveries();
+  }
+
+  /**
+   * Admin endpoint: Get recovery request history
+   */
+  @Get('admin/history/:id')
+  @UseGuards(RecoveryAdminGuard)
+  async getRecoveryHistory(@Param('id', ParseUUIDPipe) recoveryId: string) {
+    return this.adminRecoveryService.getRecoveryHistory(recoveryId);
   }
 }

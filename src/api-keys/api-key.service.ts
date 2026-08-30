@@ -21,6 +21,7 @@ export interface CreateApiKeyRequest {
   name: string;
   projectId: string;
   expiresAt?: Date | string;
+  network?: 'MAINNET' | 'TESTNET'; // Optional network scope, null = all networks
 }
 
 export interface CreateApiKeyResult {
@@ -101,6 +102,7 @@ export class ApiKeyService implements OnModuleDestroy {
         keyPrefix,
         lastFour,
         projectId: request.projectId,
+        network: request.network ?? null,
         status: ApiKeyStatus.ACTIVE,
         expiresAt,
       },
@@ -254,11 +256,12 @@ export class ApiKeyService implements OnModuleDestroy {
       throw new UnauthorizedException('You do not have access to this API key');
     }
 
-    // Create new key
+    // Create new key with same network scope
     const newKeyResult = await this.createApiKey({
       name: request.name || `${oldKey.name} (rotated)`,
       projectId: oldKey.projectId,
       expiresAt: oldKey.expiresAt || undefined,
+      network: oldKey.network as 'MAINNET' | 'TESTNET' | undefined,
     });
 
     // Mark old key with grace period instead of revoking immediately
@@ -313,6 +316,48 @@ export class ApiKeyService implements OnModuleDestroy {
       this.prisma.apiKey.count({
         where: { projectId: request.projectId },
       }),
+    ]);
+
+    return {
+      keys: keys.map((key) => this.mapPrismaApiKeyToDomain(key)),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * Lists API keys for a project filtered by network
+   */
+  async listApiKeysByNetwork(
+    projectId: string,
+    network?: 'MAINNET' | 'TESTNET',
+    page: number = 1,
+    pageSize: number = 10,
+  ): Promise<{
+    keys: ApiKey[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const skip = (page - 1) * pageSize;
+
+    const where: any = { projectId };
+    if (network !== undefined) {
+      where.network = network;
+    } else {
+      // If no network specified, return keys that support all networks (null network)
+      where.network = null;
+    }
+
+    const [keys, total] = await Promise.all([
+      this.prisma.apiKey.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.apiKey.count({ where }),
     ]);
 
     return {
@@ -383,6 +428,7 @@ export class ApiKeyService implements OnModuleDestroy {
       keyPrefix: prismaApiKey.keyPrefix,
       lastFour: prismaApiKey.lastFour,
       projectId: prismaApiKey.projectId,
+      network: prismaApiKey.network ?? undefined,
       status: prismaApiKey.status as ApiKeyStatus,
       expiresAt: prismaApiKey.expiresAt,
       lastUsedAt: prismaApiKey.lastUsedAt,

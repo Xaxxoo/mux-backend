@@ -192,6 +192,46 @@ describe('Recovery API (integration)', () => {
     });
   });
 
+  describe('initiate', () => {
+    it('moves a PENDING recovery request to IN_REVIEW', async () => {
+      const pending = makeDbRecovery();
+      const inReview = makeDbRecovery({
+        status: 'IN_REVIEW',
+        updatedAt: new Date(NOW.getTime() + 1000),
+      });
+
+      prisma.recoveryRequest.findUnique.mockResolvedValue(pending);
+      prisma.recoveryRequest.update.mockResolvedValue(inReview);
+
+      const result = await controller.initiate('rec-001');
+
+      expect(result.status).toBe(RecoveryStatus.IN_REVIEW);
+      expect(prisma.recoveryRequest.update).toHaveBeenCalledWith({
+        where: { id: 'rec-001' },
+        data: { status: RecoveryStatus.IN_REVIEW },
+      });
+    });
+
+    it('throws BadRequestException when request is not PENDING', async () => {
+      prisma.recoveryRequest.findUnique.mockResolvedValue(
+        makeDbRecovery({ status: 'IN_REVIEW' }),
+      );
+
+      await expect(controller.initiate('rec-001')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(prisma.recoveryRequest.update).not.toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when request does not exist', async () => {
+      prisma.recoveryRequest.findUnique.mockResolvedValue(null);
+
+      await expect(controller.initiate('nonexistent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
   describe('remove', () => {
     it('deletes a recovery request', async () => {
       prisma.recoveryRequest.findUnique.mockResolvedValue(makeDbRecovery());

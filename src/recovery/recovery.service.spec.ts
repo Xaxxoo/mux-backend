@@ -273,6 +273,46 @@ describe('RecoveryService', () => {
     });
   });
 
+  describe('initiate', () => {
+    it('should move a PENDING recovery request to IN_REVIEW', async () => {
+      prisma.recoveryRequest.findUnique.mockResolvedValue(mockRecovery);
+      prisma.recoveryRequest.update.mockResolvedValue({
+        ...mockRecovery,
+        status: 'IN_REVIEW',
+      });
+
+      const result = await service.initiate(
+        '660e8400-e29b-41d4-a716-446655440001',
+      );
+
+      expect(prisma.recoveryRequest.update).toHaveBeenCalledWith({
+        where: { id: '660e8400-e29b-41d4-a716-446655440001' },
+        data: { status: RecoveryStatus.IN_REVIEW },
+      });
+      expect(result.status).toEqual(RecoveryStatus.IN_REVIEW);
+    });
+
+    it('should throw if the recovery request is not PENDING', async () => {
+      prisma.recoveryRequest.findUnique.mockResolvedValue({
+        ...mockRecovery,
+        status: 'IN_REVIEW',
+      });
+
+      await expect(
+        service.initiate('660e8400-e29b-41d4-a716-446655440001'),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.recoveryRequest.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw if the recovery request is not found', async () => {
+      prisma.recoveryRequest.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.initiate('nonexistent-id'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
   describe('remove', () => {
     it('should delete a recovery request', async () => {
       prisma.recoveryRequest.findUnique.mockResolvedValue(mockRecovery);

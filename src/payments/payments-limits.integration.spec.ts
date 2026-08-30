@@ -10,7 +10,8 @@ import { RequestContextService } from '../common/request-context/request-context
 import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MetricsService } from '../metrics/metrics.service';
-import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { PaymentMetricsService } from './payment-metrics.service';
+import { ConfigService } from '@nestjs/config';
 
 describe('Payments and Limits Integration', () => {
   let paymentsService: PaymentsService;
@@ -29,6 +30,7 @@ describe('Payments and Limits Integration', () => {
     payment: { create: jest.fn(), findMany: jest.fn() },
     transaction: { findMany: jest.fn() },
     legacyUser: {},
+    $transaction: jest.fn((cb: any) => cb(mockPrisma)),
   };
 
   const mockWalletsService = {
@@ -37,6 +39,7 @@ describe('Payments and Limits Integration', () => {
 
   const mockRequestContext = {
     getRequestId: jest.fn().mockReturnValue('integration-req-id'),
+    getClientVersion: jest.fn().mockReturnValue(undefined),
   };
 
   beforeEach(async () => {
@@ -62,14 +65,8 @@ describe('Payments and Limits Integration', () => {
             incrementLimitChecks: jest.fn(),
           },
         },
-        {
-          provide: WebhookEventEmitterService,
-          useValue: {
-            emitPaymentCreated: jest.fn().mockResolvedValue(undefined),
-            emitPaymentCompleted: jest.fn().mockResolvedValue(undefined),
-            emitPaymentFailed: jest.fn().mockResolvedValue(undefined),
-          },
-        },
+        PaymentMetricsService,
+        { provide: ConfigService, useValue: { get: jest.fn() } },
       ],
     }).compile();
 

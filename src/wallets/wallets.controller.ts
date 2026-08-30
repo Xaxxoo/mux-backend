@@ -7,9 +7,9 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
   UseGuards,
   Headers,
-  Query,
   BadRequestException,
 } from '@nestjs/common';
 import {
@@ -18,6 +18,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
 } from '@nestjs/swagger';
 import {
   WalletCreationOrchestrator,
@@ -26,7 +27,9 @@ import {
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
+import { UpdateWalletNicknameDto } from './dto/update-wallet-nickname.dto';
 import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
+import { WalletResponseDto } from './dto/wallet-response.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
@@ -55,6 +58,16 @@ function parsePaginationParam(
   return n;
 }
 
+/**
+ * Public wallet API (`/v1/wallets`).
+ *
+ * NOTE (issue #691): wallet key rotation is deliberately NOT exposed here.
+ * `WalletsService.rotateWalletKey` is an internal custody operation, driven
+ * through the internal key-management route
+ * (`POST /v1/internal/key-management/rotate`, guarded by `InternalServiceGuard`).
+ * Rotation creates a successor wallet rather than mutating an existing one
+ * (see #692), so it is not a self-service action for API-key holders.
+ */
 @ApiTags('wallets')
 @ApiSecurity('api-key')
 @Controller('wallets')
@@ -67,6 +80,11 @@ export class WalletsController {
   ) {}
 
   @ApiOperation({ summary: 'Create a new wallet' })
+  @ApiResponse({
+    status: 201,
+    description: 'Wallet created successfully',
+    type: WalletResponseDto,
+  })
   @Post()
   create(
     @Body() createWalletDto: CreateWalletDto,
@@ -84,8 +102,28 @@ export class WalletsController {
     );
   }
 
+  /**
+   * #496: List wallets with optional filters and offset-based pagination.
+   */
   @ApiOperation({
     summary: 'List wallets with optional filters and pagination',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallets retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        data: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/WalletResponseDto' },
+        },
+        total: { type: 'number' },
+        limit: { type: 'number' },
+        offset: { type: 'number' },
+        hasMore: { type: 'boolean' },
+      },
+    },
   })
   @ApiQuery({
     name: 'userId',
@@ -122,6 +160,12 @@ export class WalletsController {
     description: 'Number of records to skip (default 0)',
     example: 0,
   })
+  @ApiQuery({
+    name: 'loadTestMode',
+    required: false,
+    description: 'Enable synthetic load test data generation (default false)',
+    example: false,
+  })
   @Get()
   findAll(
     @Query('userId') userId?: string,
@@ -130,6 +174,7 @@ export class WalletsController {
     @Query('includeArchived') includeArchived?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('loadTestMode') loadTestMode?: string,
   ) {
     return this.walletsService.findAll({
       userId,
@@ -138,6 +183,7 @@ export class WalletsController {
       includeArchived: includeArchived === 'true',
       limit: parsePaginationParam(limit, 'limit'),
       offset: parsePaginationParam(offset, 'offset'),
+      loadTestMode: loadTestMode === 'true',
     });
   }
 
@@ -150,7 +196,6 @@ export class WalletsController {
   @RequireApiKey()
   @Get('protected')
   async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
-    // context contains developer, project, and apiKey info
     return {
       message: 'This endpoint is protected by API key',
       developer: context.developer.email,
@@ -174,6 +219,37 @@ export class WalletsController {
   @Get('user/:userId')
   async findByUserId(@Param('userId') userId: string) {
     return this.walletsService.findWalletsByUserId(userId);
+  }
+
+  @ApiOperation({
+    summary: 'Find a wallet by its Stellar public key (address) and network',
+    description:
+      'Looks up the wallet associated with a given Stellar public key on a specific network. ' +
+      'Address uniqueness is enforced at the DB level (@@unique([network, publicKey])); ' +
+      'this endpoint surfaces that constraint as a human-readable query.',
+  })
+  @ApiParam({ name: 'publicKey', description: 'Stellar public key (G-address)' })
+  @ApiQuery({
+    name: 'network',
+    enum: WalletNetwork,
+    required: true,
+    description: 'Network (MAINNET or TESTNET)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet found',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'No wallet found for this public key on the given network' })
+  @Get('address/:publicKey')
+  async findByPublicKey(
+    @Param('publicKey') publicKey: string,
+    @Query('network') network: WalletNetwork,
+  ) {
+    if (!network) {
+      throw new BadRequestException('network query parameter is required');
+    }
+    return this.walletsService.findByPublicKey(publicKey, network);
   }
 
   @ApiOperation({
@@ -201,6 +277,13 @@ export class WalletsController {
     return this.walletsService.setNetworkPreference(userId, dto.network);
   }
 
+  @ApiOperation({ summary: 'Get a wallet by ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet retrieved successfully',
+    type: WalletResponseDto,
+  })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.walletsService.findOne(id);
@@ -213,8 +296,31 @@ export class WalletsController {
     return this.walletsService.update(id, updateWalletDto);
   }
 
+  @ApiOperation({ summary: 'Set or clear the nickname for a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'Wallet nickname updated',
+    type: WalletResponseDto,
+  })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @Patch(':id/nickname')
+  updateNickname(
+    @Param('id') id: string,
+    @Body() dto: UpdateWalletNicknameDto,
+  ) {
+    return this.walletsService.updateNickname(id, dto.nickname);
+  }
+
   @ApiOperation({ summary: 'Delete a wallet' })
   @ApiParam({ name: 'id', description: 'Wallet ID' })
+  @ApiResponse({ status: 200, description: 'Wallet deleted' })
+  @ApiResponse({ status: 404, description: 'Wallet not found' })
+  @ApiResponse({
+    status: 409,
+    description:
+      'Wallet has pending (PENDING/SUBMITTED) transactions and cannot be deleted',
+  })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.walletsService.remove(id);
