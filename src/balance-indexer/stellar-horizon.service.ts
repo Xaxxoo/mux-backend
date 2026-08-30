@@ -32,8 +32,14 @@ export interface HorizonBalance {
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
   private readonly horizonUrls: Record<WalletNetwork, string>;
+  private readonly server: Server;
+  private readonly circuitBreaker: CircuitBreaker;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly requestContext: RequestContextService,
+    @Optional() private readonly horizonAccountCache?: HorizonAccountCacheService,
+  ) {
     this.horizonUrls = {
       [WalletNetwork.TESTNET]: this.configService.get<string>(
         'STELLAR_HORIZON_TESTNET_URL',
@@ -45,42 +51,10 @@ export class StellarHorizonService {
       ),
     };
 
-    this.logger.log(
-      `Initialized Stellar Horizon clients: testnet=${this.horizonUrls[WalletNetwork.TESTNET]}, mainnet=${this.horizonUrls[WalletNetwork.MAINNET]}`,
-  private readonly horizonUrl: string;
-  private readonly server: Server;
-  private readonly circuitBreaker: CircuitBreaker;
-
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly requestContext: RequestContextService,
-    @Optional() private readonly horizonAccountCache?: HorizonAccountCacheService,
-  ) {
-    this.horizonUrl = this.configService.get<string>(
+    const horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
-      'https://horizon-testnet.stellar.org',
+      this.horizonUrls[WalletNetwork.TESTNET],
     );
-  }
-
-  /**
-   * Resolves the Horizon base URL for a given network. Defaults to testnet
-   * when no network is specified, matching prior (single-URL) behavior.
-   */
-  private resolveUrl(network: WalletNetwork = WalletNetwork.TESTNET): string {
-    return this.horizonUrls[network];
-    this.maxRetries = this.configService.get<number>(
-      'STELLAR_HORIZON_MAX_RETRIES',
-      3,
-    );
-    this.retryBackoffMs = this.configService.get<number>(
-      'STELLAR_HORIZON_RETRY_BACKOFF_MS',
-      500,
-    );
-    this.retryJitterMs = this.configService.get<number>(
-      'STELLAR_HORIZON_RETRY_JITTER_MS',
-      250,
-    );
-
     this.server = new Server(horizonUrl, { allowHttp: false });
     this.circuitBreaker = new CircuitBreaker('stellar-horizon', {
       failureThreshold: this.configService.get<number>(
@@ -92,7 +66,16 @@ export class StellarHorizonService {
         30000,
       ),
     });
-    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
+
+    this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
+  }
+
+  /**
+   * Resolves the Horizon base URL for a given network. Defaults to testnet
+   * when no network is specified, matching prior (single-URL) behavior.
+   */
+  private resolveUrl(network: WalletNetwork = WalletNetwork.TESTNET): string {
+    return this.horizonUrls[network];
   }
 
   /**
@@ -154,30 +137,20 @@ export class StellarHorizonService {
     network: WalletNetwork = WalletNetwork.TESTNET,
   ): Promise<BalanceUpdate[]> {
     const horizonUrl = this.resolveUrl(network);
-  async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
-    try {
-      const account = await this.executeWithRetry(
-        () => this.server.loadAccount(publicKey),
-        `loadAccount(${publicKey.substring(0, 8)}...)`,
-      );
 
-      // Simplified mock implementation
-      const response = await this.mockHorizonRequest(publicKey, horizonUrl);
-      const response = await this.withRetry(
-        () => this.mockHorizonRequest(publicKey),
+    try {
+      const response = await this.executeWithRetry(
+        () => this.mockHorizonRequest(publicKey, horizonUrl),
         `getAccountBalances(${publicKey.substring(0, 8)}...)`,
       );
 
       const balances: BalanceUpdate[] = response.balances.map((balance) => ({
         walletId: '', // Will be set by caller
         asset: this.parseAsset(balance),
-      const balances: BalanceUpdate[] = account.balances.map((balance) => ({
-        walletId: '', // Will be set by caller
-        asset: this.parseAsset(balance as unknown as HorizonBalance),
         balance: balance.balance,
-        ledgerSequence: parseInt(account.sequence, 10),
+        ledgerSequence: parseInt(response.sequence, 10),
         timestamp: new Date(),
       }));
 
@@ -203,9 +176,6 @@ export class StellarHorizonService {
     publicKey: string,
     network: WalletNetwork = WalletNetwork.TESTNET,
   ): Promise<boolean> {
-    try {
-      await this.mockHorizonRequest(publicKey, this.resolveUrl(network));
-  async accountExists(publicKey: string): Promise<boolean> {
     const requestId = this.requestContext.getRequestId();
     const logPrefix = requestId ? `[${requestId}] ` : '';
 
