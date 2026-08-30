@@ -4,5 +4,9 @@ export const PAYMENT_LIMITS_PORT = Symbol('PAYMENT_LIMITS_PORT') as InjectionTok
 
 @Injectable()
 export abstract class PaymentLimitsPort {
-  abstract checkLimits(walletId: string, amount: number): Promise<void>;
+  abstract checkLimits(
+    walletId: string,
+    amount: number,
+    assetCode?: string,
+  ): Promise<void>;
 }

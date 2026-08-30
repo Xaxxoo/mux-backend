@@ -12,6 +12,7 @@ import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
 import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 const ACTIVE_WALLET = { id: 'wallet-uuid-sender', status: WalletStatus.ACTIVE };
 const RECEIVER_WALLET = {
@@ -37,6 +38,7 @@ describe('PaymentsService', () => {
   let eventEmitter: any;
   let metrics: any;
   let requestContext: any;
+  let webhookEventEmitter: any;
 
   beforeEach(async () => {
     prisma = {
@@ -58,6 +60,11 @@ describe('PaymentsService', () => {
       incrementPaymentIdempotencyHit: jest.fn(),
     };
     requestContext = { getRequestId: jest.fn().mockReturnValue('req-1') };
+    webhookEventEmitter = {
+      emitPaymentCreated: jest.fn().mockResolvedValue(undefined),
+      emitPaymentCompleted: jest.fn().mockResolvedValue(undefined),
+      emitPaymentFailed: jest.fn().mockResolvedValue(undefined),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +75,10 @@ describe('PaymentsService', () => {
         { provide: EventEmitter2, useValue: eventEmitter },
         { provide: MetricsService, useValue: metrics },
         { provide: RequestContextService, useValue: requestContext },
+        {
+          provide: WebhookEventEmitterService,
+          useValue: webhookEventEmitter as WebhookEventEmitterService,
+        },
       ],
     }).compile();
 
@@ -101,6 +112,7 @@ describe('PaymentsService', () => {
       expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
+        undefined,
       );
       expect(prisma.payment.create).toHaveBeenCalledWith({
         data: {
@@ -142,6 +154,7 @@ describe('PaymentsService', () => {
           description: dtoWithAsset.description,
           userId: dtoWithAsset.fromId,
           status: PaymentStatus.PENDING,
+          idempotencyKey: null,
         },
       });
       expect(result.assetCode).toBe('EUR');
@@ -214,6 +227,7 @@ describe('PaymentsService', () => {
       expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
+        undefined,
       );
     });
   });

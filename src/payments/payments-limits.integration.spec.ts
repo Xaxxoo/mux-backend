@@ -10,6 +10,7 @@ import { RequestContextService } from '../common/request-context/request-context
 import { PAYMENT_LIMITS_PORT } from './ports/payment-limits.port';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { MetricsService } from '../metrics/metrics.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 describe('Payments and Limits Integration', () => {
   let paymentsService: PaymentsService;
@@ -59,6 +60,14 @@ describe('Payments and Limits Integration', () => {
             incrementPaymentIdempotencyHit: jest.fn(),
             incrementLimitExceeded: jest.fn(),
             incrementLimitChecks: jest.fn(),
+          },
+        },
+        {
+          provide: WebhookEventEmitterService,
+          useValue: {
+            emitPaymentCreated: jest.fn().mockResolvedValue(undefined),
+            emitPaymentCompleted: jest.fn().mockResolvedValue(undefined),
+            emitPaymentFailed: jest.fn().mockResolvedValue(undefined),
           },
         },
       ],
@@ -145,9 +154,9 @@ describe('Payments and Limits Integration', () => {
       const limit = { walletId: testWalletId, dailyLimit: 1000, perTransactionLimit: 500 };
 
       mockPrisma.walletLimit.findUnique.mockResolvedValue(limit);
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
 
       const result = await limitsService.getLimits(testWalletId);
-
       expect(result).toBeDefined();
       expect(result.walletId).toBe(testWalletId);
       expect(result.dailyLimit).toBe(1000);
@@ -173,6 +182,7 @@ describe('Payments and Limits Integration', () => {
         .mockResolvedValueOnce(senderWallet)
         .mockResolvedValueOnce(receiverWallet);
       mockPrisma.walletLimit.findUnique.mockResolvedValue(limit);
+      mockPrisma.transaction.findMany.mockResolvedValue([]);
 
       const createPaymentDto = {
         walletId: testWalletId,

@@ -27,6 +27,12 @@ describe('LimitsService', () => {
       transaction: {
         findMany: jest.fn(),
       },
+      wallet: {
+        findUnique: jest.fn().mockResolvedValue({ userId: 1 }),
+      },
+      spendingLimit: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
     };
     eventEmitter = { emit: jest.fn() };
     metrics = {

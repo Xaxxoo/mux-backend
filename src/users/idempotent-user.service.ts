@@ -81,9 +81,17 @@ export class IdempotentUserService {
 
     this.logger.log(`Looking up user with authId: ${authId}`);
 
+    // Validate and normalize the request the same way UsersService.create does,
+    // so both paths agree on authId uniqueness (trimmed) and reject invalid input.
+    this.validateRequest(request);
+
+    const normalizedAuthId = authId.trim();
+    const normalizedEmail = email?.trim() || null;
+    const normalizedDisplayName = displayName?.trim() || null;
+
     try {
       const existingUser = await this.prisma.user.findUnique({
-        where: { authId },
+        where: { authId: normalizedAuthId },
       });
 
       if (existingUser) {
@@ -110,14 +118,14 @@ export class IdempotentUserService {
 
       const newUser = await this.prisma.user.create({
         data: {
-          authId,
-          email,
-          displayName,
+          authId: normalizedAuthId,
+          email: normalizedEmail,
+          displayName: normalizedDisplayName,
           authProvider,
           lastLoginAt: new Date(),
           lastLoginIp,
           lastLoginUserAgent,
-          status: 'ACTIVE',
+          status: UserStatus.ACTIVE,
         },
       });
 
@@ -143,7 +151,7 @@ export class IdempotentUserService {
         );
 
         const retryUser = await this.prisma.user.findUnique({
-          where: { authId },
+          where: { authId: normalizedAuthId },
         });
 
         if (retryUser) {
