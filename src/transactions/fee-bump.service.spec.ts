@@ -66,6 +66,8 @@ function makeService(overrides: {
   getDecryptedPrivateKey?: jest.Mock;
   updateStatus?: jest.Mock;
   mainnetPaymentSubmitEnabled?: boolean;
+  feeBumpMaxFee?: number;
+  metrics?: { incrementFeeBumpCapRejection: jest.Mock };
 }) {
   const mockHttp = (createRequestIdAwareAxios as jest.Mock)();
   if (overrides.horizonPost) {
@@ -85,6 +87,9 @@ function makeService(overrides: {
 
   const mockConfigService = {
     get: jest.fn().mockImplementation((key: string, defaultValue: string) => {
+      if (key === 'FEE_BUMP_MAX_FEE' && overrides.feeBumpMaxFee !== undefined) {
+        return String(overrides.feeBumpMaxFee);
+      }
       return defaultValue;
     }),
   };
@@ -95,11 +100,16 @@ function makeService(overrides: {
       .mockReturnValue(overrides.mainnetPaymentSubmitEnabled ?? true),
   };
 
+  const mockMetrics = overrides.metrics ?? {
+    incrementFeeBumpCapRejection: jest.fn(),
+  };
+
   const service = new FeeBumpService(
     mockConfigService as any,
     mockWalletsService as any,
     mockTransactionsService as any,
     mockFeatureFlagService as any,
+    mockMetrics as any,
   );
 
   // Inject the mock http directly
@@ -111,6 +121,7 @@ function makeService(overrides: {
     mockWalletsService,
     mockTransactionsService,
     mockFeatureFlagService,
+    mockMetrics,
   };
 }
 
@@ -270,6 +281,83 @@ describe('FeeBumpService', () => {
       await expect(service.submitFeeBump(VALID_DTO)).rejects.toThrow(
         'vault offline',
       );
+    });
+  });
+
+  describe('submitFeeBump – fee-bump sponsorship cap (#800)', () => {
+    it('refuses submission when the computed fee exceeds the configured cap', async () => {
+      const mockPost = jest.fn();
+      // BASE_FEE is mocked to 100 → computed fee = 1000 stroops; cap = 10.
+      const { service, mockMetrics } = makeService({
+        horizonPost: mockPost,
+        feeBumpMaxFee: 10,
+        metrics: { incrementFeeBumpCapRejection: jest.fn() },
+      });
+
+      await expect(
+        service.submitFeeBump(VALID_DTO),
+      ).rejects.toThrow(BadRequestException);
+
+      // Must never reach Horizon with an over-cap fee.
+      expect(mockPost).not.toHaveBeenCalled();
+      expect(mockMetrics.incrementFeeBumpCapRejection).toHaveBeenCalled();
+    });
+
+    it('allows submission when the computed fee is within the cap', async () => {
+      const mockPost = jest.fn().mockResolvedValue({
+        data: { hash: 'within-cap-hash', successful: true },
+        status: 200,
+      });
+      // Computed fee = 1000 stroops; cap = 5000 → allowed.
+      const { service, mockMetrics } = makeService({
+        horizonPost: mockPost,
+        feeBumpMaxFee: 5000,
+        metrics: { incrementFeeBumpCapRejection: jest.fn() },
+      });
+
+      const result = await service.submitFeeBump(VALID_DTO);
+
+      expect(result.stellarHash).toBe('within-cap-hash');
+      expect(mockMetrics.incrementFeeBumpCapRejection).not.toHaveBeenCalled();
+    });
+
+    it('fails fast at construction when FEE_BUMP_MAX_FEE is not a positive integer', () => {
+      const badConfig = {
+        get: jest.fn().mockImplementation((key: string) => {
+          if (key === 'FEE_BUMP_MAX_FEE') return '-1';
+          return undefined;
+        }),
+      };
+      expect(
+        () =>
+          new FeeBumpService(
+            badConfig as any,
+            {} as any,
+            {} as any,
+            { isEnabled: jest.fn().mockReturnValue(true) } as any,
+          ),
+      ).toThrow('FEE_BUMP_MAX_FEE must be a positive integer');
+    });
+
+    it('requires FEE_BUMP_MAX_FEE in production (fail-closed)', () => {
+      const previous = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        const prodConfig = {
+          get: jest.fn().mockReturnValue(undefined),
+        };
+        expect(
+          () =>
+            new FeeBumpService(
+              prodConfig as any,
+              {} as any,
+              {} as any,
+              { isEnabled: jest.fn().mockReturnValue(true) } as any,
+            ),
+        ).toThrow('FEE_BUMP_MAX_FEE is required in production');
+      } finally {
+        process.env.NODE_ENV = previous;
+      }
     });
   });
 

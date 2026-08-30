@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  Optional,
   BadRequestException,
   ServiceUnavailableException,
   NotFoundException,
@@ -8,6 +9,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { TransactionMetricsService } from './transaction-metrics.service';
 import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
 import {
   TransactionBuilder,
@@ -50,12 +53,14 @@ export class FeeBumpService {
   private readonly horizonTestnet: Server;
   private readonly horizonMainnet: Server;
   private readonly http = createRequestIdAwareAxios();
+  private readonly feeBumpMaxFeeStroops: number;
 
   constructor(
     private readonly configService: ConfigService,
     private readonly walletsService: WalletsService,
     private readonly transactionsService: TransactionsService,
     private readonly featureFlagService: FeatureFlagService,
+    @Optional() private readonly metrics?: TransactionMetricsService,
   ) {
     const testnetUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
@@ -67,6 +72,8 @@ export class FeeBumpService {
     );
     this.horizonTestnet = new Server(testnetUrl);
     this.horizonMainnet = new Server(mainnetUrl);
+    // Resolve/validate the fee-bump cap once at construction (issue #800).
+    this.feeBumpMaxFeeStroops = this.resolveFeeBumpMaxFeeStroops();
   }
 
   /**
@@ -139,10 +146,15 @@ export class FeeBumpService {
     // --- 3. Build fee-bump transaction envelope ------------------------------
     let feeBumpXdr: string;
     try {
+      // Fee: use 10× the base fee to ensure acceptance — but never beyond the
+      // operator-configured cap (issue #800). Enforced before building so an
+      // unbounded sponsorship request is refused without signing/submitting.
+      const feeStroops = this.computeFeeStroops();
+      this.enforceFeeCap(feeStroops, network);
+
       const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
         feeSourceKeypair,
-        // Fee: use 10× the base fee to ensure acceptance
-        String(parseInt(BASE_FEE) * 10),
+        String(feeStroops),
         innerTx,
         this.networkPassphrase(network),
       );
@@ -242,6 +254,68 @@ export class FeeBumpService {
 
   private networkPassphrase(network: 'TESTNET' | 'MAINNET'): string {
     return network === 'MAINNET' ? Networks.PUBLIC : Networks.TESTNET;
+  }
+
+  /**
+   * Compute the fee (in stroops) Mux will sponsor on a fee-bump.
+   * Currently 10× the network base fee to ensure the tx is accepted.
+   */
+  private computeFeeStroops(): number {
+    return Number.parseInt(BASE_FEE, 10) * 10;
+  }
+
+  /**
+   * Resolve the `FEE_BUMP_MAX_FEE` cap (in stroops) at construction.
+   *
+   * Fail-closed semantics (issue #800):
+   *  - If the env var is set it must be a positive integer; otherwise the app
+   *    refuses to start (fail-fast).
+   *  - In production the var is REQUIRED — omitting it throws at startup so an
+   *    unbounded cap can never silently weaken the sponsorship limit.
+   *  - Outside production (dev/test) a bounded local default (10× base fee) is
+   *    used so the service remains testable without a configured cap.
+   */
+  private resolveFeeBumpMaxFeeStroops(): number {
+    const raw = this.configService.get<string>('FEE_BUMP_MAX_FEE');
+    if (raw !== undefined && raw !== null && raw !== '') {
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(
+          'FEE_BUMP_MAX_FEE must be a positive integer number of stroops',
+        );
+      }
+      return parsed;
+    }
+
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'FEE_BUMP_MAX_FEE is required in production to prevent unbounded ' +
+          'fee-bump sponsorship (issue #800)',
+      );
+    }
+
+    return this.computeFeeStroops();
+  }
+
+  /**
+   * Refuse a fee-bump submission whose fee exceeds the configured cap.
+   * Records a metric and a request-id-scoped warning log.
+   */
+  private enforceFeeCap(feeStroops: number, network: string): void {
+    if (feeStroops <= this.feeBumpMaxFeeStroops) {
+      return;
+    }
+
+    const requestId = RequestContextService.getCurrentRequestId() ?? 'unknown';
+    this.logger.warn(
+      `Refused fee-bump submission: fee ${feeStroops} stroops exceeds cap ` +
+        `${this.feeBumpMaxFeeStroops} stroops (network=${network}, req=${requestId})`,
+    );
+    this.metrics?.incrementFeeBumpCapRejection();
+
+    throw new BadRequestException(
+      `Fee-bump fee of ${feeStroops} stroops exceeds the configured maximum of ${this.feeBumpMaxFeeStroops} stroops`,
+    );
   }
 
   private horizonUrl(network: 'TESTNET' | 'MAINNET'): string {
