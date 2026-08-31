@@ -81,6 +81,9 @@ export class CronSecretGuard implements CanActivate {
       throw new UnauthorizedException('Invalid cron secret');
     }
 
+    this.logger.debug(
+      `[${requestId}] Cron request from ${request.ip} authenticated successfully`,
+    );
     return true;
   }
 
