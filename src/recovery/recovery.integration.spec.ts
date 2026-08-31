@@ -1,11 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import {
-  BadRequestException,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { RecoveryService } from './recovery.service';
 import { RecoveryController } from './recovery.controller';
 import { PrismaService } from '../prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
 import { RecoveryStatus } from './domain/recovery.model';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
@@ -54,6 +52,7 @@ describe('Recovery API (integration)', () => {
         create: jest.fn(),
         update: jest.fn(),
         delete: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       wallet: {
         findUnique: jest.fn(),
@@ -65,6 +64,12 @@ describe('Recovery API (integration)', () => {
       providers: [
         RecoveryService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
+          },
+        },
       ],
     }).compile();
 

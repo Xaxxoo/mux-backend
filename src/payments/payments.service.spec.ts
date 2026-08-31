@@ -15,6 +15,7 @@ import { PaymentStatus } from './entities/payment.entity';
 import { PaymentCreatedEvent } from './events/payment-created.event';
 import { PaymentCompletedEvent } from './events/payment-completed.event';
 import { PaymentFailedEvent } from './events/payment-failed.event';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 const ACTIVE_WALLET = { id: 'wallet-uuid-sender', status: WalletStatus.ACTIVE };
 const RECEIVER_WALLET = {
@@ -191,6 +192,7 @@ describe('PaymentsService', () => {
       expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
+        undefined,
       );
       expect(prisma.payment.create).toHaveBeenCalledWith({
         data: {
@@ -305,6 +307,7 @@ describe('PaymentsService', () => {
       expect(paymentLimitsPort.checkLimits).toHaveBeenCalledWith(
         BASE_DTO.walletId,
         BASE_DTO.amount,
+        undefined,
       );
     });
   });

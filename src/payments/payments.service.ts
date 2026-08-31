@@ -265,7 +265,7 @@ export class PaymentsService {
       this.logger,
     );
     await retryWithBackoff(
-      () => this.paymentLimitsPort.checkLimits(walletId, amount),
+      () => this.paymentLimitsPort.checkLimits(walletId, amount, assetCode),
       3,
       100,
       this.logger,
@@ -361,6 +361,15 @@ export class PaymentsService {
           updatedPayment.userId,
         ),
       );
+
+      await this.webhookEventEmitter.emitPaymentCompleted({
+        paymentId: updatedPayment.id,
+        amount: updatedPayment.amount,
+        currency: updatedPayment.currency,
+        assetCode: updatedPayment.assetCode ?? null,
+        userId: updatedPayment.userId,
+        status: updatedPayment.status,
+      });
     } else if (updatePaymentDto.status === PaymentStatus.FAILED) {
       this.metrics.incrementPaymentsFailed('user_action');
       this.eventEmitter.emit(
@@ -372,6 +381,15 @@ export class PaymentsService {
           updatedPayment.userId,
         ),
       );
+
+      await this.webhookEventEmitter.emitPaymentFailed({
+        paymentId: updatedPayment.id,
+        amount: updatedPayment.amount,
+        currency: updatedPayment.currency,
+        assetCode: updatedPayment.assetCode ?? null,
+        userId: updatedPayment.userId,
+        status: updatedPayment.status,
+      });
     }
 
     return updatedPayment;

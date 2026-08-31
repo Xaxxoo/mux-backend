@@ -229,6 +229,51 @@ export class WebhookEventEmitterService {
   }
 
   /**
+   * Emits a payment.created event
+   */
+  async emitPaymentCreated(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_CREATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.completed event
+   */
+  async emitPaymentCompleted(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_COMPLETED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.failed event
+   */
+  async emitPaymentFailed(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_FAILED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
    * Creates a webhook event with standard structure
    */
   private createEvent(

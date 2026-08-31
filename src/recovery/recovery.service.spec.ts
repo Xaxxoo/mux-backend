@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { RecoveryService } from './recovery.service';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { RecoveryStatus } from './domain/recovery.model';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
@@ -33,6 +34,7 @@ describe('RecoveryService', () => {
         create: jest.fn(),
         update: jest.fn(),
         delete: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       wallet: {
         findUnique: jest.fn(),
@@ -45,6 +47,12 @@ describe('RecoveryService', () => {
         {
           provide: PrismaService,
           useValue: prisma,
+        },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
+          },
         },
       ],
     }).compile();
@@ -113,7 +121,9 @@ describe('RecoveryService', () => {
       prisma.recoveryRequest.findMany.mockResolvedValue([mockRecovery]);
       prisma.recoveryRequest.count.mockResolvedValue(1);
 
-      await service.findAll({ walletId: '550e8400-e29b-41d4-a716-446655440000' });
+      await service.findAll({
+        walletId: '550e8400-e29b-41d4-a716-446655440000',
+      });
 
       expect(prisma.recoveryRequest.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -217,7 +227,9 @@ describe('RecoveryService', () => {
     it('should return a recovery request', async () => {
       prisma.recoveryRequest.findUnique.mockResolvedValue(mockRecovery);
 
-      const result = await service.findOne('660e8400-e29b-41d4-a716-446655440001');
+      const result = await service.findOne(
+        '660e8400-e29b-41d4-a716-446655440001',
+      );
 
       expect(result.id).toEqual(mockRecovery.id);
     });
@@ -225,9 +237,9 @@ describe('RecoveryService', () => {
     it('should throw if not found', async () => {
       prisma.recoveryRequest.findUnique.mockResolvedValue(null);
 
-      await expect(
-        service.findOne('nonexistent-id'),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.findOne('nonexistent-id')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 
@@ -314,9 +326,9 @@ describe('RecoveryService', () => {
     it('should throw if not found', async () => {
       prisma.recoveryRequest.findUnique.mockResolvedValue(null);
 
-      await expect(
-        service.remove('nonexistent-id'),
-      ).rejects.toThrow(NotFoundException);
+      await expect(service.remove('nonexistent-id')).rejects.toThrow(
+        NotFoundException,
+      );
     });
   });
 });

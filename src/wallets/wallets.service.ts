@@ -12,7 +12,6 @@ import {
   WalletNetwork,
   WalletStatus,
   WalletStatusResponse,
-  canTransitionWalletStatus,
 } from './domain/wallet.model';
 import {
   DecryptionError,
