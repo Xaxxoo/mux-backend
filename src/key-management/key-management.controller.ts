@@ -5,6 +5,7 @@ import {
   Body,
   Get,
   Query,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -21,6 +22,7 @@ import {
 import { KeyManagementService } from './key-management.service';
 import type { GenerateKeyRequest, SignRequest } from './key-management.service';
 import { EncryptionMigrationService } from './encryption-migration.service';
+import { WalletKeyReEncryptionService } from './wallet-key-reencryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
 import {
@@ -87,6 +89,7 @@ export class KeyManagementController {
     private readonly keyManagementService: KeyManagementService,
     private readonly auditService: KeyRotationAuditService,
     private readonly encryptionMigrationService: EncryptionMigrationService,
+    private readonly walletKeyReEncryptionService: WalletKeyReEncryptionService,
   ) {}
 
   /**
@@ -106,6 +109,45 @@ export class KeyManagementController {
     const parsedBatchSize = parsePaginationParam(batchSize, 'batchSize', 500);
     return this.encryptionMigrationService.migrateEncryptionVersions(
       parsedBatchSize,
+    );
+  }
+
+  /**
+   * Re-encrypts stored wallet key material after a WALLET_ENCRYPTION_KEY
+   * (master key) rotation (issue #693).
+   *
+   * Requires `WALLET_ENCRYPTION_KEY_PREVIOUS` to be set to the prior key;
+   * returns 400 otherwise. Idempotent — wallets already on the current key are
+   * reported as `alreadyCurrent` and left untouched.
+   */
+  @ApiOperation({
+    summary:
+      'Re-encrypt wallet key material under the current WALLET_ENCRYPTION_KEY',
+  })
+  @ApiQuery({
+    name: 'batchSize',
+    required: false,
+    description: 'Rows fetched per database page (1-1000, default 100)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Run result: scanned, reEncrypted, alreadyCurrent and failed counts.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'WALLET_ENCRYPTION_KEY_PREVIOUS is not configured',
+  })
+  @Post('re-encrypt-wallet-keys')
+  @HttpCode(HttpStatus.OK)
+  async reEncryptWalletKeys(
+    @Query('batchSize') batchSize?: string,
+    @Headers('x-request-id') requestId?: string,
+  ) {
+    const parsedBatchSize = parsePaginationParam(batchSize, 'batchSize', 1000);
+    return this.walletKeyReEncryptionService.reEncryptWallets(
+      { batchSize: parsedBatchSize },
+      requestId,
     );
   }
 

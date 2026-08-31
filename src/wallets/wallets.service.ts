@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
   OnModuleDestroy,
@@ -561,8 +562,18 @@ export class WalletsService implements OnModuleDestroy {
    * Results are ordered newest-first. Archived wallets are excluded by default.
    */
   async findAll(filters?: WalletListFilters): Promise<WalletListResult> {
-    // Load test mode returns synthetic data for performance testing
+    // #696: `loadTestMode` returns synthetic wallet data for local performance
+    // testing only. It must never be reachable in production — a public caller
+    // could otherwise pull fabricated wallet records from the `/v1` API.
     if (filters?.loadTestMode) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new ForbiddenException(
+          'loadTestMode is not available in this environment',
+        );
+      }
+      this.logger.warn(
+        'Serving synthetic wallet data (loadTestMode=true) — non-production only',
+      );
       return this.generateTestData(filters);
     }
 

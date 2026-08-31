@@ -358,8 +358,12 @@ To guarantee security, the application validates critical environment variables 
 * **`WALLET_ENCRYPTION_KEY`**: Key used to encrypt Stellar wallet private keys.
   - **Required**: Must be defined and not empty.
   - **Length**: Must be at least **32 characters** long.
-  - **Security**: Must **not** match the default placeholder string (`your-secret-encryption-key-min-32-chars`).
+  - **Security**: Must **not** match a documented placeholder string (e.g. `your-secret-encryption-key-min-32-chars`). This is now enforced in `validateEnv()` at startup, not only by `EncryptionService`.
   - **Behavior**: If validation fails, the application throws an error and fails to boot.
+* **`WALLET_ENCRYPTION_KEY_PREVIOUS`** *(optional)*: The prior `WALLET_ENCRYPTION_KEY`, set only during a master-key rotation.
+  - **Length**: Must be at least **32 characters** long when present.
+  - **Security**: Must not be a documented placeholder and must differ from `WALLET_ENCRYPTION_KEY`.
+  - **Use**: Enables the internal re-encryption job `POST /v1/internal/key-management/re-encrypt-wallet-keys`, which decrypts wallet key material with the previous key and re-encrypts it under the current key. Remove it once a run reports `reEncrypted=0` and `failed=0`.
 * **`EXPORT_SIGNING_SECRET`**: Secret used to sign export download tokens.
   - **Required in production**: Must be defined and not empty.
   - **Length**: Must be at least **32 characters** long.
@@ -415,6 +419,9 @@ Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key
 - ✅ Private keys NEVER exposed outside the service boundary
 - ✅ Immediate encryption after generation
 - ✅ Graceful handling of invalid/disconnected states
+- ✅ Master-key rotation via `WALLET_ENCRYPTION_KEY_PREVIOUS` + internal re-encryption job (`POST /v1/internal/key-management/re-encrypt-wallet-keys`)
+- ✅ Sensitive fields (`privateKey`, `encryptedSecret`, …) redacted from **every** HTTP response by a global `ResponseSanitizerInterceptor`
+- ✅ Synthetic wallet data (`GET /v1/wallets?loadTestMode=true`) is refused with `403` outside non-production environments
 
 **Documentation:**
 - [Key Management Module README](src/key-management/README.md)

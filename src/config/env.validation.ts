@@ -24,6 +24,7 @@ export interface ValidatedEnv {
   MAINTENANCE_ADMIN_SECRET: string;
   CRON_SECRET: string;
   WALLET_ENCRYPTION_KEY: string;
+  WALLET_ENCRYPTION_KEY_PREVIOUS: string;
   EXPORT_SIGNING_SECRET: string;
   STELLAR_HORIZON_URL: string;
   STELLAR_HORIZON_MAX_RETRIES: number;
@@ -56,6 +57,17 @@ export interface ValidatedEnv {
   OTEL_EXPORTER_OTLP_PROTOCOL: string;
   OTEL_SERVICE_NAME: string;
 }
+
+/**
+ * Known placeholder values shipped in `.env.example` / documentation. These are
+ * never acceptable as a real encryption secret — `EncryptionService` already
+ * rejects them at construction time, and `validateEnv()` fails fast on them so
+ * the process never even reaches Nest bootstrap with an insecure key.
+ */
+const PLACEHOLDER_ENCRYPTION_KEYS: ReadonlySet<string> = new Set([
+  'your-secret-encryption-key-min-32-chars',
+  'your-secure-encryption-key-min-32-chars-long',
+]);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -260,6 +272,50 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     32,
     violations,
   );
+  if (
+    WALLET_ENCRYPTION_KEY &&
+    PLACEHOLDER_ENCRYPTION_KEYS.has(WALLET_ENCRYPTION_KEY)
+  ) {
+    violations.push({
+      variable: 'WALLET_ENCRYPTION_KEY',
+      message:
+        'WALLET_ENCRYPTION_KEY must not use the documented placeholder value — ' +
+        'generate a real secret (e.g. `openssl rand -hex 32`)',
+    });
+  }
+
+  // Optional predecessor key used by the wallet key re-encryption job (#693)
+  // while a master-key rotation is in flight. When set it must be a real
+  // secret, distinct from the current key.
+  const WALLET_ENCRYPTION_KEY_PREVIOUS =
+    env.WALLET_ENCRYPTION_KEY_PREVIOUS?.trim() ?? '';
+  if (WALLET_ENCRYPTION_KEY_PREVIOUS) {
+    if (WALLET_ENCRYPTION_KEY_PREVIOUS.length < 32) {
+      violations.push({
+        variable: 'WALLET_ENCRYPTION_KEY_PREVIOUS',
+        message:
+          'WALLET_ENCRYPTION_KEY_PREVIOUS must be at least 32 characters long',
+      });
+    }
+    if (PLACEHOLDER_ENCRYPTION_KEYS.has(WALLET_ENCRYPTION_KEY_PREVIOUS)) {
+      violations.push({
+        variable: 'WALLET_ENCRYPTION_KEY_PREVIOUS',
+        message:
+          'WALLET_ENCRYPTION_KEY_PREVIOUS must not use the documented placeholder value',
+      });
+    }
+    if (
+      WALLET_ENCRYPTION_KEY &&
+      WALLET_ENCRYPTION_KEY_PREVIOUS === WALLET_ENCRYPTION_KEY
+    ) {
+      violations.push({
+        variable: 'WALLET_ENCRYPTION_KEY_PREVIOUS',
+        message:
+          'WALLET_ENCRYPTION_KEY_PREVIOUS must differ from WALLET_ENCRYPTION_KEY',
+      });
+    }
+  }
+
   const EXPORT_SIGNING_SECRET = env.EXPORT_SIGNING_SECRET?.trim() ?? '';
   if (process.env.NODE_ENV === 'production') {
     if (!EXPORT_SIGNING_SECRET) {
@@ -578,6 +634,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     MAINTENANCE_ADMIN_SECRET,
     CRON_SECRET,
     WALLET_ENCRYPTION_KEY,
+    WALLET_ENCRYPTION_KEY_PREVIOUS,
     EXPORT_SIGNING_SECRET,
     STELLAR_HORIZON_URL,
     STELLAR_HORIZON_MAX_RETRIES,
