@@ -7,9 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
-import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
 import { LimitWarningEvent } from './events/limit-warning.event';
@@ -194,36 +192,110 @@ export class LimitsService {
     return response;
   }
 
-  async checkLimits(walletId: string, amount: number): Promise<void> {
+  async checkLimits(
+    walletId: string,
+    amount: number,
+    assetCode?: string,
+  ): Promise<void> {
     const limits = await this.getLimits(walletId);
-    if (!limits) {
-      this.metrics.incrementLimitChecks('allowed');
-      return;
+
+    if (limits) {
+      this.logger.log(`Checking limits walletId=${walletId} amount=${amount}`);
+
+      // Enforce per-transaction cap: a cap of 0 blocks all transactions
+      if (
+        limits.perTransactionLimit >= 0 &&
+        amount > limits.perTransactionLimit
+      ) {
+        this.eventEmitter.emit(
+          'limit.exceeded',
+          new LimitExceededEvent(
+            walletId,
+            'perTransaction',
+            limits.perTransactionLimit,
+            amount,
+            new Date(),
+          ),
+        );
+        throw new LimitExceededException(
+          LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
+          `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+        );
+      }
+
+      // Enforce daily cap only when a positive daily limit is configured
+      if (limits.dailyLimit > 0) {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+
+        const txns = await retryWithBackoff(
+          () =>
+            this.prisma.transaction.findMany({
+              where: {
+                senderWalletId: walletId,
+                createdAt: { gte: startOfDay },
+              },
+              select: { amount: true },
+            }),
+          3,
+          100,
+          this.logger,
+        );
+
+        const currentDailyTotal = txns.reduce(
+          (sum, t) => sum + Number(t.amount),
+          0,
+        );
+        if (currentDailyTotal + amount > limits.dailyLimit) {
+          this.metrics.incrementLimitExceeded('daily');
+          this.metrics.incrementLimitChecks('denied');
+          this.eventEmitter.emit(
+            'limit.exceeded',
+            new LimitExceededEvent(
+              walletId,
+              'daily',
+              limits.dailyLimit,
+              currentDailyTotal + amount,
+              new Date(),
+            ),
+          );
+          throw new LimitExceededException(
+            LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
+            `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+          );
+        }
+      }
     }
 
-    this.logger.log(
-      `Checking limits walletId=${walletId} amount=${amount}`,
+    // Enforce per-asset spending limits (SpendingLimit) in addition to wallet floats
+    await this.enforceSpendingLimits(walletId, amount, assetCode);
+
+    this.metrics.incrementLimitChecks('allowed');
+  }
+
+  /**
+   * Enforces per-asset spending limits for the wallet's owner.
+   * SpendingLimit rows are scoped by userId + assetCode (+ period), so native XLM
+   * (assetCode null) and non-native assets such as USDC are accounted separately.
+   */
+  private async enforceSpendingLimits(
+    walletId: string,
+    amount: number,
+    assetCode?: string,
+  ): Promise<void> {
+    const wallet = await retryWithBackoff(
+      () =>
+        this.prisma.wallet.findUnique({
+          where: { id: walletId },
+          select: { userId: true },
+        }),
+      3,
+      100,
+      this.logger,
     );
 
-    // Enforce per-transaction cap: a cap of 0 blocks all transactions
-    if (
-      limits.perTransactionLimit >= 0 &&
-      amount > limits.perTransactionLimit
-    ) {
-      this.eventEmitter.emit(
-        'limit.exceeded',
-        new LimitExceededEvent(
-          walletId,
-          'perTransaction',
-          limits.perTransactionLimit,
-          amount,
-          new Date(),
-        ),
-      );
-      throw new LimitExceededException(
-        LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
-        `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
-      );
+    if (!wallet) {
+      return;
     }
 
     if (
@@ -259,15 +331,15 @@ export class LimitsService {
           'limit.exceeded',
           new LimitExceededEvent(
             walletId,
-            'daily',
-            limits.dailyLimit,
-            currentDailyTotal + amount,
+            'period',
+            periodLimit,
+            currentPeriodTotal + amount,
             new Date(),
           ),
         );
         throw new LimitExceededException(
           LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
-          `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+          `Period limit exceeded for asset. Limit: ${periodLimit}, Used: ${currentPeriodTotal}`,
         );
       }
 
@@ -290,8 +362,113 @@ export class LimitsService {
         );
       }
     }
+  }
 
-    this.metrics.incrementLimitChecks('allowed');
+  /**
+   * Returns the start of the current period for a given limit period.
+   */
+  private getPeriodStart(period: LimitPeriod): Date {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    if (period === LimitPeriod.WEEKLY) {
+      // Monday-based week
+      const daysSinceMonday = (now.getDay() + 6) % 7;
+      now.setDate(now.getDate() - daysSinceMonday);
+    } else if (period === LimitPeriod.MONTHLY) {
+      now.setDate(1);
+    }
+
+    return now;
+  }
+
+  /**
+   * Creates or updates a per-asset spending limit for a user.
+   * assetCode null applies the limit across all assets (e.g. native XLM).
+   */
+  async setSpendingLimit(dto: CreateLimitDto) {
+    const period = dto.period ?? LimitPeriod.DAILY;
+    const assetCode = dto.assetCode ?? null;
+
+    const data = {
+      perTransactionLimit: dto.perTransactionLimit,
+      periodLimit: dto.periodLimit,
+      isActive: dto.isActive ?? true,
+    };
+
+    const existing = await retryWithBackoff(
+      () =>
+        this.prisma.spendingLimit.findFirst({
+          where: { userId: dto.userId, period, assetCode },
+        }),
+      3,
+      100,
+      this.logger,
+    );
+
+    const result = existing
+      ? await this.prisma.spendingLimit.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await this.prisma.spendingLimit.create({
+          data: { ...data, userId: dto.userId, period, assetCode },
+        });
+
+    this.logger.log(
+      `Set spending limit for user ${dto.userId} period=${period} asset=${assetCode ?? 'ALL'}`,
+    );
+
+    return result;
+  }
+
+  /**
+   * Lists the per-asset spending limits configured for a user.
+   */
+  async getSpendingLimits(
+    userId: string,
+    filter?: { period?: LimitPeriod; isActive?: boolean },
+  ) {
+    return retryWithBackoff(
+      () =>
+        this.prisma.spendingLimit.findMany({
+          where: {
+            userId,
+            ...(filter?.period ? { period: filter.period } : {}),
+            ...(filter?.isActive !== undefined
+              ? { isActive: filter.isActive }
+              : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+        }),
+      3,
+      100,
+      this.logger,
+    );
+  }
+
+  /**
+   * Deactivates a per-asset spending limit for a user (period + asset).
+   */
+  async removeSpendingLimit(
+    userId: string,
+    period: LimitPeriod,
+    assetCode?: string,
+  ) {
+    return retryWithBackoff(
+      () =>
+        this.prisma.spendingLimit.updateMany({
+          where: {
+            userId,
+            period,
+            assetCode: assetCode ?? null,
+          },
+          data: { isActive: false },
+        }),
+      3,
+      100,
+      this.logger,
+    );
   }
 
   async removeLimits(walletId: string) {
@@ -299,21 +476,18 @@ export class LimitsService {
     if (!existing)
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
     return retryWithBackoff(
-      () => this.prisma.walletLimit.update({
-        where: { walletId },
-        data: { deletedAt: new Date() },
-      }),
+      () =>
+        this.prisma.walletLimit.update({
+          where: { walletId },
+          data: { deletedAt: new Date() },
+        }),
       3,
       100,
       this.logger,
     );
   }
 
-  async updateLimits(
-    walletId: string,
-    daily?: number,
-    perTx?: number,
-  ) {
+  async updateLimits(walletId: string, daily?: number, perTx?: number) {
     const existing = await this.getLimits(walletId);
     if (!existing)
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
@@ -322,7 +496,10 @@ export class LimitsService {
       return existing;
     }
 
-    const updateData: any = {};
+    const updateData: {
+      dailyLimit?: number;
+      perTransactionLimit?: number;
+    } = {};
     if (daily !== undefined) updateData.dailyLimit = daily;
     if (perTx !== undefined) updateData.perTransactionLimit = perTx;
 

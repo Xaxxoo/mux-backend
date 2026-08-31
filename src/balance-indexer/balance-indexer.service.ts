@@ -434,8 +434,6 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         wallet.publicKey,
         wallet.network as WalletNetwork,
       );
-      const horizonBalances =
-        await this.stellarHorizonService.getAccountBalances(wallet.publicKey);
 
       let balancesUpdated = 0;
       let mismatchesFound = 0;
@@ -559,7 +557,8 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
     if (!matches) {
       this.logger.warn(
-        `Balance mismatch for wallet ${walletId}: indexed=${indexed}, onChain=${onChain}`,
+        `${logPrefix}Balance mismatch detected for wallet ${walletId}: ` +
+          `indexed=${indexed}, onChain=${onChain}`,
       );
 
       if (onChainBalance) {
@@ -568,6 +567,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
       await this.balanceRepo.recordMismatch(walletId, asset);
 
+      // Emit balance.mismatch webhook (fire-and-forget)
       const assetLabel = asset.code ?? asset.type;
       const difference = this.calculateDifference(indexed, onChain);
       this.webhookEventEmitter
@@ -579,86 +579,32 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
           difference,
         })
         .catch((err) =>
-          this.logger.error('Failed to emit balance.mismatch event:', err),
+          this.logger.error(
+            `${logPrefix}Failed to emit balance.mismatch webhook:`,
+            err,
+          ),
         );
     } else {
       await this.balanceRepo.clearMismatch(walletId, asset);
-    try {
-      const indexedBalance = await this.getBalance(walletId, asset);
-
-      const wallet = await this.balanceRepo.findWallet(walletId);
-      if (!wallet) {
-        throw new NotFoundException(`Wallet ${walletId} not found`);
-      }
-
-      const horizonBalances =
-        await this.stellarHorizonService.getAccountBalances(wallet.publicKey);
-      const onChainBalance = horizonBalances.find((b) =>
-        this.assetsMatch(b.asset, asset),
-      );
-
-      const indexed = indexedBalance?.balance ?? '0';
-      const onChain = onChainBalance?.balance ?? '0';
-      const matches = indexed === onChain;
-
-      if (!matches) {
-        this.logger.warn(
-          `${logPrefix}Balance mismatch detected for wallet ${walletId}: ` +
-            `indexed=${indexed}, onChain=${onChain}`,
-        );
-
-        if (onChainBalance) {
-          await this.applyBalanceUpdate(walletId, onChainBalance, true);
-        }
-
-        await this.balanceRepo.recordMismatch(walletId, asset);
-
-        // Emit balance.mismatch webhook (fire-and-forget)
-        const assetLabel = asset.code ?? asset.type;
-        const difference = this.calculateDifference(indexed, onChain);
-        this.webhookEventEmitter
-          .emitBalanceMismatch({
-            walletId,
-            asset: assetLabel,
-            indexedBalance: indexed,
-            onChainBalance: onChain,
-            difference,
-          })
-          .catch((err) =>
-            this.logger.error(
-              `${logPrefix}Failed to emit balance.mismatch webhook:`,
-              err,
-            ),
-          );
-      } else {
-        await this.balanceRepo.clearMismatch(walletId, asset);
-      }
-
-      this.metrics.record({
-        operation: 'reconcile',
-        outcome: 'success',
-        durationMs: Date.now() - startTime,
-        mismatchesFound: matches ? 0 : 1,
-      });
-
-      return {
-        walletId,
-        asset,
-        indexedBalance: indexed,
-        onChainBalance: onChain,
-        matches,
-        difference: matches
-          ? undefined
-          : this.calculateDifference(indexed, onChain),
-      };
-    } catch (error) {
-      this.metrics.record({
-        operation: 'reconcile',
-        outcome: 'failure',
-        durationMs: Date.now() - startTime,
-      });
-      throw error;
     }
+
+    this.metrics.record({
+      operation: 'reconcile',
+      outcome: 'success',
+      durationMs: Date.now() - startTime,
+      mismatchesFound: matches ? 0 : 1,
+    });
+
+    return {
+      walletId,
+      asset,
+      indexedBalance: indexed,
+      onChainBalance: onChain,
+      matches,
+      difference: matches
+        ? undefined
+        : this.calculateDifference(indexed, onChain),
+    };
   }
 
   /**

@@ -2,7 +2,9 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  Logger,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
@@ -16,9 +18,53 @@ import {
 
 @Injectable()
 export class RecoveryService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(RecoveryService.name);
+  private readonly recoveryRequestTtlMs: number;
+
+  constructor(
+    private prisma: PrismaService,
+    private configService: ConfigService,
+  ) {
+    this.recoveryRequestTtlMs = this.configService.get<number>(
+      'RECOVERY_REQUEST_TTL_MS',
+      7 * 24 * 60 * 60 * 1000, // default TTL: 7 days
+    );
+  }
+
+  /**
+   * Expires stale recovery requests (older than the configured TTL) by moving
+   * them to a terminal CANCELLED state so they can no longer be approved.
+   */
+  async expireStaleRequests(): Promise<number> {
+    const cutoff = new Date(Date.now() - this.recoveryRequestTtlMs);
+
+    const result = await this.prisma.recoveryRequest.updateMany({
+      where: {
+        status: {
+          in: [RecoveryStatus.PENDING, RecoveryStatus.IN_REVIEW],
+        },
+        createdAt: { lt: cutoff },
+      },
+      data: { status: RecoveryStatus.CANCELLED },
+    });
+
+    if (result.count > 0) {
+      this.logger.log(`Expired ${result.count} stale recovery request(s)`);
+    }
+
+    return result.count;
+  }
+
+  private isExpired(recovery: { createdAt: Date }): boolean {
+    return (
+      Date.now() - recovery.createdAt.getTime() > this.recoveryRequestTtlMs
+    );
+  }
 
   async create(createRecoveryDto: CreateRecoveryDto): Promise<RecoveryRequest> {
+    // Clear stale requests first so they do not block a new recovery flow.
+    await this.expireStaleRequests();
+
     const existingActive = await this.prisma.recoveryRequest.findFirst({
       where: {
         walletId: createRecoveryDto.walletId,
@@ -124,6 +170,17 @@ export class RecoveryService {
     const recovery = await this.findOne(id);
 
     if (updateRecoveryDto.status) {
+      // Block stale approvals: requests older than the TTL must be re-raised
+      // before their keys are rotated.
+      if (
+        updateRecoveryDto.status === RecoveryStatus.APPROVED &&
+        this.isExpired(recovery)
+      ) {
+        throw new BadRequestException(
+          'Recovery request has expired and can no longer be approved',
+        );
+      }
+
       let updatedRecovery: RecoveryRequest;
       try {
         updatedRecovery = transitionRecoveryStatus(
@@ -222,6 +279,7 @@ export class RecoveryService {
             RecoveryStatus.CANCELLED,
           ],
         },
+        createdAt: { gte: new Date(Date.now() - this.recoveryRequestTtlMs) },
       },
       orderBy: { createdAt: 'desc' },
     });

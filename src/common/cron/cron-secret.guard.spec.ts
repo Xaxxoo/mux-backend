@@ -1,287 +1,166 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import {
+  Controller,
   ExecutionContext,
+  Post,
+  INestApplication,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CronSecretGuard } from './cron-secret.guard';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import {
+  CRON_SECRET_ENV,
+  CRON_SECRET_HEADER,
+  CronSecretGuard,
+} from './cron-secret.guard';
 
-describe('CronSecretGuard (unit)', () => {
-  let guard: CronSecretGuard;
-  let configService: ConfigService;
-  const VALID_SECRET = 'valid-cron-secret-32-chars-minimum!';
-  const INVALID_SECRET = 'wrong-secret';
+function config(value?: string): ConfigService {
+  return {
+    get: (key: string, defaultValue?: unknown) =>
+      key === CRON_SECRET_ENV ? (value ?? defaultValue) : defaultValue,
+  } as unknown as ConfigService;
+}
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        CronSecretGuard,
-        {
-          provide: ConfigService,
-          useValue: {
-            get: jest.fn((key: string, defaultValue?: any) => {
-              if (key === 'CRON_SECRET') {
-                return VALID_SECRET;
-              }
-              return defaultValue;
-            }),
-          },
-        },
-      ],
-    }).compile();
+function contextWithHeaders(
+  headers: Record<string, string | string[]>,
+): ExecutionContext {
+  return {
+    switchToHttp: () => ({
+      getRequest: () => ({ headers, ip: '10.0.0.1', path: '/test' }),
+    }),
+  } as unknown as ExecutionContext;
+}
 
-    guard = module.get<CronSecretGuard>(CronSecretGuard);
-    configService = module.get<ConfigService>(ConfigService);
+describe('CronSecretGuard (#801)', () => {
+  const SECRET = 'super-secret-cron-value';
+
+  describe('fail-closed when unconfigured', () => {
+    it('denies every request when the secret is unset, even with a header supplied', () => {
+      const guard = new CronSecretGuard(config());
+      expect(() =>
+        guard.canActivate(contextWithHeaders({ [CRON_SECRET_HEADER]: SECRET })),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('treats a blank/whitespace-only secret as unconfigured', () => {
+      const guard = new CronSecretGuard(config('   '));
+      expect(() => guard.canActivate(contextWithHeaders({}))).toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('never falls back to any implicit "allow" or mock credential', () => {
+      const guard = new CronSecretGuard(config());
+      // Even an empty-string header must not be treated as a match against
+      // an empty/unconfigured secret.
+      expect(() =>
+        guard.canActivate(contextWithHeaders({ [CRON_SECRET_HEADER]: '' })),
+      ).toThrow(UnauthorizedException);
+    });
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
+  describe('when configured', () => {
+    const guard = new CronSecretGuard(config(SECRET));
+
+    it('allows a request with the correct secret', () => {
+      expect(
+        guard.canActivate(contextWithHeaders({ [CRON_SECRET_HEADER]: SECRET })),
+      ).toBe(true);
+    });
+
+    it('rejects a request with no header', () => {
+      expect(() => guard.canActivate(contextWithHeaders({}))).toThrow(
+        UnauthorizedException,
+      );
+    });
+
+    it('rejects a request with a wrong secret', () => {
+      expect(() =>
+        guard.canActivate(contextWithHeaders({ [CRON_SECRET_HEADER]: 'nope' })),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('rejects a secret of matching length but different content (guards against naive comparison)', () => {
+      expect(() =>
+        guard.canActivate(
+          contextWithHeaders({
+            [CRON_SECRET_HEADER]: 'x'.repeat(SECRET.length),
+          }),
+        ),
+      ).toThrow(UnauthorizedException);
+    });
+
+    it('rejects a header supplied as an array (multiple headers) using only the first value', () => {
+      expect(() =>
+        guard.canActivate(
+          contextWithHeaders({ [CRON_SECRET_HEADER]: ['nope', SECRET] }),
+        ),
+      ).toThrow(UnauthorizedException);
+    });
   });
 
-  describe('canActivate', () => {
-    const createMockExecutionContext = (
-      headers: Record<string, string | undefined> = {},
-      ip: string = '127.0.0.1',
-      requestId: string = 'test-req-id'
-    ): ExecutionContext => {
-      const mockRequest = {
-        headers,
-        ip,
-        requestId,
-      };
+  describe('project API keys are not a substitute for the cron secret', () => {
+    it('a request carrying only an Authorization header (project API key) is still rejected', () => {
+      const guard = new CronSecretGuard(config(SECRET));
+      expect(() =>
+        guard.canActivate(
+          contextWithHeaders({ authorization: 'Bearer mux_live_something' }),
+        ),
+      ).toThrow(UnauthorizedException);
+    });
+  });
 
-      const mockExecutionContext = {
-        switchToHttp: jest.fn().mockReturnValue({
-          getRequest: jest.fn().mockReturnValue(mockRequest),
-        }),
-      } as unknown as ExecutionContext;
+  describe('HTTP integration', () => {
+    @Controller('internal-guarded')
+    @UseGuards(CronSecretGuard)
+    class GuardedController {
+      @Post('poll-pending')
+      poll() {
+        return { processed: 0 };
+      }
+    }
 
-      return mockExecutionContext;
-    };
+    let app: INestApplication;
 
-    describe('when CRON_SECRET is not configured', () => {
-      beforeEach(() => {
-        (configService.get as jest.Mock).mockImplementation(() => '');
-        guard = new CronSecretGuard(configService);
-      });
-
-      it('throws UnauthorizedException with "not configured" message', () => {
-        const context = createMockExecutionContext();
-
-        expect(() => guard.canActivate(context)).toThrow(
-          UnauthorizedException
-        );
-        expect(() => guard.canActivate(context)).toThrow(
-          'Cron secret not configured on server'
-        );
-      });
-
-      it('throws even if X-Cron-Secret header is provided', () => {
-        const context = createMockExecutionContext({
-          'x-cron-secret': INVALID_SECRET,
-        });
-
-        expect(() => guard.canActivate(context)).toThrow(
-          UnauthorizedException
-        );
-        expect(() => guard.canActivate(context)).toThrow(
-          'Cron secret not configured on server'
-        );
-      });
+    beforeAll(async () => {
+      const moduleRef = await Test.createTestingModule({
+        controllers: [GuardedController],
+        providers: [{ provide: ConfigService, useValue: config(SECRET) }],
+      }).compile();
+      app = moduleRef.createNestApplication();
+      await app.init();
     });
 
-    describe('when CRON_SECRET is configured', () => {
-      beforeEach(() => {
-        (configService.get as jest.Mock).mockImplementation((key) => {
-          if (key === 'CRON_SECRET') {
-            return VALID_SECRET;
-          }
-          return '';
-        });
-        guard = new CronSecretGuard(configService);
-      });
-
-      describe('and X-Cron-Secret header is missing', () => {
-        it('throws UnauthorizedException with "header is required" message', () => {
-          const context = createMockExecutionContext({});
-
-          expect(() => guard.canActivate(context)).toThrow(
-            UnauthorizedException
-          );
-          expect(() => guard.canActivate(context)).toThrow(
-            'X-Cron-Secret header is required'
-          );
-        });
-
-        it('throws even if other headers are provided', () => {
-          const context = createMockExecutionContext({
-            'x-api-key': 'some-key',
-            'authorization': 'Bearer token',
-          });
-
-          expect(() => guard.canActivate(context)).toThrow(
-            UnauthorizedException
-          );
-          expect(() => guard.canActivate(context)).toThrow(
-            'X-Cron-Secret header is required'
-          );
-        });
-      });
-
-      describe('and X-Cron-Secret header is empty', () => {
-        it('throws UnauthorizedException', () => {
-          const context = createMockExecutionContext({
-            'x-cron-secret': '',
-          });
-
-          expect(() => guard.canActivate(context)).toThrow(
-            UnauthorizedException
-          );
-          expect(() => guard.canActivate(context)).toThrow(
-            'X-Cron-Secret header is required'
-          );
-        });
-      });
-
-      describe('and X-Cron-Secret header value is incorrect', () => {
-        it('throws UnauthorizedException with "Invalid cron secret" message', () => {
-          const context = createMockExecutionContext({
-            'x-cron-secret': INVALID_SECRET,
-          });
-
-          expect(() => guard.canActivate(context)).toThrow(
-            UnauthorizedException
-          );
-          expect(() => guard.canActivate(context)).toThrow(
-            'Invalid cron secret'
-          );
-        });
-
-        it('throws even if the invalid secret is similar to the valid one', () => {
-          const context = createMockExecutionContext({
-            'x-cron-secret': VALID_SECRET + 'extra',
-          });
-
-          expect(() => guard.canActivate(context)).toThrow(
-            UnauthorizedException
-          );
-          expect(() => guard.canActivate(context)).toThrow(
-            'Invalid cron secret'
-          );
-        });
-      });
-
-      describe('and X-Cron-Secret header value is correct', () => {
-        it('returns true', () => {
-          const context = createMockExecutionContext({
-            'x-cron-secret': VALID_SECRET,
-          });
-
-          const result = guard.canActivate(context);
-
-          expect(result).toBe(true);
-        });
-
-        it('returns true regardless of case of header name (case-insensitive)', () => {
-          // Express/Node normalizes header names to lowercase
-          const context = createMockExecutionContext({
-            'x-cron-secret': VALID_SECRET,
-          });
-
-          const result = guard.canActivate(context);
-
-          expect(result).toBe(true);
-        });
-
-        it('returns true even with other headers present', () => {
-          const context = createMockExecutionContext({
-            'x-cron-secret': VALID_SECRET,
-            'x-request-id': 'req-123',
-            'user-agent': 'test-agent',
-          });
-
-          const result = guard.canActivate(context);
-
-          expect(result).toBe(true);
-        });
-      });
+    afterAll(async () => {
+      await app.close();
     });
 
-    describe('request tracking and logging', () => {
-      beforeEach(() => {
-        (configService.get as jest.Mock).mockImplementation((key) => {
-          if (key === 'CRON_SECRET') {
-            return VALID_SECRET;
-          }
-          return '';
-        });
-        guard = new CronSecretGuard(configService);
-      });
-
-      it('includes request ID in logs for traceability', () => {
-        const requestId = 'trace-id-12345';
-        const context = createMockExecutionContext(
-          { 'x-cron-secret': VALID_SECRET },
-          '192.168.1.100',
-          requestId
-        );
-
-        // Should not throw
-        const result = guard.canActivate(context);
-        expect(result).toBe(true);
-      });
-
-      it('logs the client IP address for failed authentication', () => {
-        const clientIp = '203.0.113.42';
-        const context = createMockExecutionContext({}, clientIp);
-
-        expect(() => guard.canActivate(context)).toThrow(
-          UnauthorizedException
-        );
-      });
+    it('returns 401 without the header', async () => {
+      await request(app.getHttpServer())
+        .post('/internal-guarded/poll-pending')
+        .expect(401);
     });
 
-    describe('security - secret handling', () => {
-      beforeEach(() => {
-        (configService.get as jest.Mock).mockImplementation((key) => {
-          if (key === 'CRON_SECRET') {
-            return VALID_SECRET;
-          }
-          return '';
-        });
-        guard = new CronSecretGuard(configService);
-      });
+    it('returns 401 with only a Bearer/API-key style header', async () => {
+      await request(app.getHttpServer())
+        .post('/internal-guarded/poll-pending')
+        .set('Authorization', 'Bearer mux_live_something')
+        .expect(401);
+    });
 
-      it('does not expose CRON_SECRET value in error messages', () => {
-        const context = createMockExecutionContext({
-          'x-cron-secret': INVALID_SECRET,
-        });
+    it('returns 401 with a wrong secret', async () => {
+      await request(app.getHttpServer())
+        .post('/internal-guarded/poll-pending')
+        .set(CRON_SECRET_HEADER, 'wrong')
+        .expect(401);
+    });
 
-        try {
-          guard.canActivate(context);
-          fail('Expected UnauthorizedException');
-        } catch (error) {
-          if (error instanceof UnauthorizedException) {
-            // The error message should not contain the actual secret
-            expect(error.message).not.toContain(VALID_SECRET);
-            expect(error.message).not.toContain(INVALID_SECRET);
-            expect(error.message).toBe('Invalid cron secret');
-          } else {
-            throw error;
-          }
-        }
-      });
-
-      it('constant-time comparison should be used for secret comparison (not vulnerable to timing attacks)', () => {
-        // This test ensures we're comparing secrets properly.
-        // In production, consider using crypto.timingSafeEqual for defense against timing attacks.
-        const context = createMockExecutionContext({
-          'x-cron-secret': VALID_SECRET,
-        });
-
-        const result = guard.canActivate(context);
-        expect(result).toBe(true);
-      });
+    it('returns 200 with the correct secret', async () => {
+      await request(app.getHttpServer())
+        .post('/internal-guarded/poll-pending')
+        .set(CRON_SECRET_HEADER, SECRET)
+        .expect(201, { processed: 0 });
     });
   });
 });

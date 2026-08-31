@@ -154,7 +154,6 @@ describe('Payments and Limits Integration', () => {
       mockPrisma.transaction.findMany.mockResolvedValue([]);
 
       const result = await limitsService.getLimits(testWalletId);
-
       expect(result).toBeDefined();
       expect(result.walletId).toBe(testWalletId);
       expect(result.dailyLimit).toBe(1000);
