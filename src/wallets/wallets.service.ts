@@ -23,7 +23,10 @@ import { KeyDecryptionException } from '../key-management/exceptions/key-decrypt
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
-import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import {
+  WalletApiMetricsService,
+  type WalletApiOperation,
+} from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
 import * as crypto from 'crypto';
 import { TransactionBuilder, Keypair } from 'stellar-sdk';
@@ -633,14 +636,22 @@ export class WalletsService implements OnModuleDestroy {
   /**
    * Set or clear the human-readable nickname for a wallet.
    *
+   * Nicknames are sanitized before persistence (so they are safe to render in
+   * dashboards) and must be unique among the non-archived wallets owned by the
+   * same user. Pass `null` (or a value that sanitizes to empty) to clear the
+   * nickname; clearing never triggers the uniqueness check.
+   *
    * @param walletId  ID of the wallet to update.
    * @param nickname  New label (max 100 chars), or null/undefined to clear.
+   * @param requestId Request ID for log/metric correlation.
    * @returns Updated public wallet (without encrypted secret).
    */
   async updateNickname(
     walletId: string,
     nickname: string | null | undefined,
+    requestId?: string,
   ): Promise<PublicWallet> {
+    const startedAt = Date.now();
     const existing = await this.prisma.wallet.findUnique({
       where: { id: walletId },
     });
@@ -648,10 +659,52 @@ export class WalletsService implements OnModuleDestroy {
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     }
 
+    // Normalize before checking uniqueness so the stored value is exactly what
+    // is verified. An empty/null/whitespace-after-sanitize input clears.
+    const sanitized =
+      nickname === null || nickname === undefined
+        ? null
+        : this.sanitizeNickname(nickname);
+    const nextNickname =
+      sanitized !== null && sanitized.length > 0 ? sanitized : null;
+
+    // Per-owner uniqueness: the label must be unique across the non-archived
+    // wallets the same user owns (excluding this wallet). Comparison is
+    // case-insensitive so "Savings" and "savings" cannot coexist.
+    if (nextNickname !== null) {
+      const duplicate = await this.prisma.wallet.findFirst({
+        where: {
+          userId: existing.userId,
+          nickname: { equals: nextNickname, mode: 'insensitive' },
+          id: { not: walletId },
+          status: { not: WalletStatus.ARCHIVED },
+        },
+      });
+      if (duplicate) {
+        this.logger.warnWithContext('Rejected duplicate wallet nickname', {
+          operation: 'update_nickname',
+          entityType: 'wallet',
+          entityId: walletId,
+          requestId,
+          userId: existing.userId,
+          outcome: 'conflict',
+        });
+        this.recordMetric(
+          'update_nickname',
+          'failure',
+          startedAt,
+          existing.network as WalletNetwork,
+        );
+        throw new ConflictException(
+          'Wallet nickname is already in use for this wallet owner',
+        );
+      }
+    }
+
     const updated = await this.prisma.wallet.update({
       where: { id: walletId },
       data: {
-        nickname: nickname ?? null,
+        nickname: nextNickname,
         updatedAt: new Date(),
       },
     });
@@ -660,10 +713,36 @@ export class WalletsService implements OnModuleDestroy {
       operation: 'update_nickname',
       entityType: 'wallet',
       entityId: walletId,
+      requestId,
+      userId: existing.userId,
       outcome: 'success',
     });
 
+    this.recordMetric(
+      'update_nickname',
+      'success',
+      startedAt,
+      existing.network as WalletNetwork,
+    );
+
     return this.toPublicWallet(this.mapPrismaWalletToDomain(updated));
+  }
+
+  /**
+   * Sanitize a user-supplied wallet nickname for safe rendering.
+   *
+   * Defensive deny-list against stored-XSS: strips HTML tag-like sequences,
+   * drops `javascript:` URL schemes, removes inline `on*` event-handler
+   * attributes, and discards control characters before the value is persisted
+   * or returned to the dashboard. Only ever contains the label text afterwards.
+   */
+  private sanitizeNickname(value: string): string {
+    return value
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/javascript\s*:/gi, '')
+      .replace(/\s+on\w*\s*=/gi, ' ')
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+      .trim();
   }
 
   /**
@@ -803,7 +882,7 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   private recordMetric(
-    operation: 'create' | 'activate' | 'key_rotate' | 'status_update',
+    operation: WalletApiOperation,
     outcome: 'success' | 'failure',
     startedAt: number,
     network?: WalletNetwork,

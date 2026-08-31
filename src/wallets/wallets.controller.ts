@@ -311,8 +311,9 @@ export class WalletsController {
   updateNickname(
     @Param('id') id: string,
     @Body() dto: UpdateWalletNicknameDto,
+    @Headers('x-request-id') requestId?: string,
   ) {
-    return this.walletsService.updateNickname(id, dto.nickname);
+    return this.walletsService.updateNickname(id, dto.nickname, requestId);
   }
 
   @ApiOperation({ summary: 'Delete a wallet' })
