@@ -18,6 +18,8 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 **Critical security invariant**: User identity is established only through cryptographic verification of JWT tokens from the configured identity provider. Tokens are verified at every authentication request. Local user status (ACTIVE/INACTIVE/SUSPENDED) is checked and enforced on every call. No client-supplied identity claims are trusted.
 
+**Security Reporting**: If you discover a security vulnerability, please report it privately via [SECURITY.md](SECURITY.md) instead of filing a public GitHub issue. We commit to responding to critical vulnerabilities within 4 hours.
+
 ---
 
 ## Core Responsibilities
