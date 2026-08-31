@@ -6,7 +6,8 @@ export type WalletApiOperation =
   | 'activate'
   | 'key_rotate'
   | 'status_update'
-  | 'orchestrate_create';
+  | 'orchestrate_create'
+  | 'update_nickname';
 
 export type WalletApiOutcome =
   | 'success'

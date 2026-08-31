@@ -644,6 +644,16 @@ Wallets can carry a short, optional human-readable label.
 ```
 Pass `null` (or omit the field) to clear an existing nickname. The label is capped at 100 characters. The `nickname` field is included in all wallet responses.
 
+**Sanitization**: nicknames are sanitized before they are stored or returned so
+they are safe to render in dashboards. HTML tag-like sequences, `javascript:`
+URL schemes, inline `on*` event-handler attributes, and control characters are
+stripped. A value that sanitizes to an empty string is treated as a clear.
+
+**Uniqueness**: within a wallet owner, a nickname must be unique
+(case-insensitively) among that owner's non-archived wallets. If another
+non-archived wallet owned by the same `userId` already uses the label, the
+request is rejected with `409 Conflict` and nothing is persisted.
+
 ### Orchestration Endpoints
 
 - `POST /wallets/orchestration/create` - creates wallet with PROVISIONING -> ACTIVE flow, funds testnet account on TESTNET (#187, #188)
