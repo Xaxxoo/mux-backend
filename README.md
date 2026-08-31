@@ -142,6 +142,24 @@ Main authentication endpoint for user onboarding and wallet creation.
 * Internal user-to-user transfers
 * Support for batching and relaying
 
+#### Fee-Bump Transactions
+
+Mux Backend supports Stellar fee-bump transactions, allowing a platform sponsor account to pay transaction fees on behalf of users. The `FeeBumpService` wraps signed inner transactions in a fee-bump envelope before submission to Horizon.
+
+#### `FEATURE_MAINNET_PAYMENT_SUBMIT` Kill-Switch
+
+A **fail-closed** feature flag gates all payment submissions to Stellar mainnet. When the flag is absent or set to anything other than `"true"`, mainnet submission is rejected with HTTP 403. Testnet transactions are never affected.
+
+| `FEATURE_MAINNET_PAYMENT_SUBMIT` | Testnet | Mainnet |
+|----------------------------------|---------|---------|
+| _(unset / missing)_             | Allowed | **Blocked (403)** |
+| `"false"`                        | Allowed | **Blocked (403)** |
+| `"true"`                         | Allowed | Allowed |
+
+Set `FEATURE_MAINNET_PAYMENT_SUBMIT=true` in your production environment only after confirming the sponsor account is funded and security policies are reviewed. To emergency-halt mainnet payments, set the flag back to `false` and restart.
+
+See [Mainnet Payment Feature Flag](docs/MAINNET-PAYMENT-FEATURE-FLAG.md) for full operational guidance.
+
 ### 🧠 Account Abstraction Layer
 
 * User identity mapped to blockchain accounts
