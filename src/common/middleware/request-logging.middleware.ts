@@ -50,6 +50,7 @@ export function requestLogger(
   }
 
   let clientVersion: string | undefined;
+  let id: string;
 
   try {
     const idHeader =

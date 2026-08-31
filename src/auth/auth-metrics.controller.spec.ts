@@ -10,6 +10,7 @@ const makeSnapshot = (overrides: Partial<AuthMetricsSnapshot> = {}): AuthMetrics
     failure_invalid_payload: 0,
     failure_user_inactive: 0,
     failure_wallet_error: 0,
+    failure_jwt_verification: 0,
     failure_unknown: 0,
   },
   rateLimitHits: 0,
@@ -65,6 +66,7 @@ describe('AuthMetricsController', () => {
           failure_invalid_payload: 1,
           failure_user_inactive: 0,
           failure_wallet_error: 0,
+          failure_jwt_verification: 0,
           failure_unknown: 1,
         },
       });

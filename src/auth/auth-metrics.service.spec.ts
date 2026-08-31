@@ -1,10 +1,30 @@
 import { AuthMetricsService, AuthOutcome } from './auth-metrics.service';
+import { Registry } from 'prom-client';
+
+/**
+ * Creates a fresh AuthMetricsService with an isolated prom-client Registry so
+ * tests do not pollute (or conflict with) the global prom-client registry.
+ */
+function makeService(): { service: AuthMetricsService; registry: Registry } {
+  const registry = new Registry();
+  const service = new AuthMetricsService();
+  // De-register the gauges that were added to the global registry in the ctor,
+  // then re-register against the isolated test registry.
+  service['promGauges'].length = 0;
+  service.registerPromGauges(registry);
+  return { service, registry };
+}
 
 describe('AuthMetricsService', () => {
   let service: AuthMetricsService;
+  let registry: Registry;
 
   beforeEach(() => {
-    service = new AuthMetricsService();
+    ({ service, registry } = makeService());
+  });
+
+  afterEach(() => {
+    registry.clear();
   });
 
   describe('initial state', () => {
@@ -57,6 +77,7 @@ describe('AuthMetricsService', () => {
         'failure_invalid_payload',
         'failure_user_inactive',
         'failure_wallet_error',
+        'failure_jwt_verification',
         'failure_unknown',
       ];
 
@@ -160,6 +181,81 @@ describe('AuthMetricsService', () => {
       // snap1 should not reflect the new recording
       expect(snap1.outcomes.success_new_user).toBe(0);
       expect(snap2.outcomes.success_new_user).toBe(1);
+    });
+  });
+
+  // ─── Prometheus scrape integration ────────────────────────────────────────
+  // These tests verify that auth counters surface on the /v1/metrics scrape
+  // path (i.e. in the prom-client registry) so Prometheus can collect them.
+
+  describe('Prometheus gauge registration', () => {
+    it('registers auth_attempts_total gauge in the registry', () => {
+      const metric = registry.getSingleMetric('auth_attempts_total');
+      expect(metric).toBeDefined();
+    });
+
+    it('registers auth_rate_limit_hits_total gauge in the registry', () => {
+      const metric = registry.getSingleMetric('auth_rate_limit_hits_total');
+      expect(metric).toBeDefined();
+    });
+
+    it('registers auth_outcome_total gauge with outcome label in the registry', () => {
+      const metric = registry.getSingleMetric('auth_outcome_total');
+      expect(metric).toBeDefined();
+    });
+
+    it('registers auth_latency_average_ms gauge in the registry', () => {
+      const metric = registry.getSingleMetric('auth_latency_average_ms');
+      expect(metric).toBeDefined();
+    });
+
+    it('registers auth_latency_p95_ms gauge in the registry', () => {
+      const metric = registry.getSingleMetric('auth_latency_p95_ms');
+      expect(metric).toBeDefined();
+    });
+
+    it('auth_attempts_total gauge reflects current counter at scrape time', async () => {
+      service.recordAttempt('success_new_user', 50);
+      service.recordAttempt('success_returning_user', 60);
+      const metricsText = await registry.metrics();
+      expect(metricsText).toMatch(/auth_attempts_total 2/);
+    });
+
+    it('auth_rate_limit_hits_total gauge reflects current counter at scrape time', async () => {
+      service.recordRateLimitHit();
+      service.recordRateLimitHit();
+      service.recordRateLimitHit();
+      const metricsText = await registry.metrics();
+      expect(metricsText).toMatch(/auth_rate_limit_hits_total 3/);
+    });
+
+    it('auth_outcome_total gauge includes labeled outcome series at scrape time', async () => {
+      service.recordAttempt('success_new_user', 100);
+      service.recordAttempt('failure_unknown', 20);
+      const metricsText = await registry.metrics();
+      expect(metricsText).toMatch(/auth_outcome_total\{outcome="success_new_user"\} 1/);
+      expect(metricsText).toMatch(/auth_outcome_total\{outcome="failure_unknown"\} 1/);
+      expect(metricsText).toMatch(/auth_outcome_total\{outcome="success_returning_user"\} 0/);
+    });
+
+    it('gauge values update across successive scrapes without re-registration', async () => {
+      service.recordAttempt('success_new_user', 50);
+      const first = await registry.metrics();
+      expect(first).toMatch(/auth_attempts_total 1/);
+
+      service.recordAttempt('success_returning_user', 60);
+      const second = await registry.metrics();
+      expect(second).toMatch(/auth_attempts_total 2/);
+    });
+
+    it('does not double-register when registerPromGauges is called twice on the same registry', () => {
+      // Second call should be a no-op (metric name already present).
+      expect(() => service.registerPromGauges(registry)).not.toThrow();
+      const names = registry.getMetricsAsArray().map((m: any) => m.name);
+      const authNames = names.filter((n: string) => n.startsWith('auth_'));
+      // Each auth metric should appear exactly once.
+      const uniqueAuthNames = new Set(authNames);
+      expect(uniqueAuthNames.size).toBe(authNames.length);
     });
   });
 });

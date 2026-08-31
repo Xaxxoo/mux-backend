@@ -23,6 +23,13 @@ import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { AuthMetricsService } from './auth-metrics.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { JwtVerificationService } from './jwt-verification.service';
+import { retryWithBackoff } from './auth-retry.helper';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import {
+  AuthProvider,
+  isValidAuthProvider,
+  getValidProviderNames,
+} from './auth-provider.enum';
 
 /**
  * Single consolidated message returned to external callers for any
@@ -108,9 +115,17 @@ export class AuthPayloadValidator {
         );
       }
 
-      if (payload.authProvider.trim().length === 0) {
+      const trimmedProvider = payload.authProvider.trim().toUpperCase();
+      if (trimmedProvider.length === 0) {
         throw new BadRequestException(
           'Invalid authentication payload: authProvider cannot be empty',
+        );
+      }
+
+      // Validate against known providers
+      if (!isValidAuthProvider(trimmedProvider)) {
+        throw new BadRequestException(
+          `Invalid authentication payload: authProvider must be one of: ${getValidProviderNames()}`,
         );
       }
     }
@@ -181,6 +196,7 @@ export class AuthOrchestrator {
     private readonly idempotencyService: IdempotencyService,
     private readonly authMetrics: AuthMetricsService,
     private readonly jwtVerification: JwtVerificationService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
   ) {}
 
   /**

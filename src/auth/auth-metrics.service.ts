@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Gauge, Registry, register as globalRegistry } from 'prom-client';
 
 /**
  * Outcome labels for an authentication attempt.
@@ -9,6 +10,7 @@ export type AuthOutcome =
   | 'failure_invalid_payload'
   | 'failure_user_inactive'
   | 'failure_wallet_error'
+  | 'failure_jwt_verification'
   | 'failure_unknown';
 
 /**
@@ -39,9 +41,12 @@ export interface AuthMetricsSnapshot {
  *   single-threaded within a process.
  * • Latency samples are kept in a bounded ring-buffer (default 1 000 entries)
  *   to avoid unbounded memory growth.
+ * • Auth metrics are registered as prom-client Gauges with collect callbacks
+ *   so they appear on the shared `/v1/metrics` (Prometheus scrape) endpoint
+ *   automatically — no separate scrape target or controller is needed.
  */
 @Injectable()
-export class AuthMetricsService {
+export class AuthMetricsService implements OnModuleDestroy {
   private readonly logger = new Logger(AuthMetricsService.name);
 
   /** Maximum number of latency samples retained in the ring-buffer. */
@@ -55,6 +60,7 @@ export class AuthMetricsService {
     failure_invalid_payload: 0,
     failure_user_inactive: 0,
     failure_wallet_error: 0,
+    failure_jwt_verification: 0,
     failure_unknown: 0,
   };
 
@@ -63,6 +69,86 @@ export class AuthMetricsService {
   private latencyIndex = 0; // next write position in ring-buffer
 
   private lastResetAt: Date = new Date();
+
+  /**
+   * Prom-client Gauge instances registered for the Prometheus scrape path.
+   * Stored so we can de-register them in onModuleDestroy (test isolation).
+   */
+  private readonly promGauges: Gauge[] = [];
+
+  constructor() {
+    this.registerPromGauges(globalRegistry);
+  }
+
+  /**
+   * Registers prom-client Gauge metrics against the supplied registry
+   * (defaults to the global registry, injectable for test isolation).
+   *
+   * Each gauge uses a `collect` callback so its value is read directly from
+   * the in-memory counters at scrape time — no double bookkeeping needed.
+   */
+  registerPromGauges(registry: Registry = globalRegistry): void {
+    const register = <T extends Record<string, string>>(
+      name: string,
+      help: string,
+      labelNames: (keyof T)[] = [],
+      collectFn: (gauge: Gauge<string>) => void,
+    ): void => {
+      // Guard: skip if already registered in this registry (e.g. hot reload).
+      if (registry.getSingleMetric(name)) {
+        return;
+      }
+      const g = new Gauge({
+        name,
+        help,
+        labelNames: labelNames as string[],
+        registers: [registry],
+        collect() {
+          collectFn(this);
+        },
+      });
+      this.promGauges.push(g);
+    };
+
+    register(
+      'auth_attempts_total',
+      'Total number of authentication attempts',
+      [],
+      (g) => g.set(this.totalAttempts),
+    );
+
+    register(
+      'auth_rate_limit_hits_total',
+      'Total number of auth endpoint rate-limit rejections',
+      [],
+      (g) => g.set(this.rateLimitHits),
+    );
+
+    register(
+      'auth_outcome_total',
+      'Authentication attempts broken down by outcome label',
+      ['outcome'],
+      (g) => {
+        for (const [outcome, count] of Object.entries(this.outcomeCounts)) {
+          g.labels(outcome).set(count);
+        }
+      },
+    );
+
+    register(
+      'auth_latency_average_ms',
+      'Rolling average authentication latency in milliseconds',
+      [],
+      (g) => g.set(this.computeAverage()),
+    );
+
+    register(
+      'auth_latency_p95_ms',
+      'Approximate P95 authentication latency in milliseconds',
+      [],
+      (g) => g.set(this.computePercentile(95)),
+    );
+  }
 
   // ─── Public instrumentation API ──────────────────────────────────────────
 
@@ -119,6 +205,21 @@ export class AuthMetricsService {
     this.latencyIndex = 0;
     this.lastResetAt = new Date();
     this.logger.log('Auth metrics counters reset');
+  }
+
+  /**
+   * De-registers the prom-client Gauges from their registry on module destroy.
+   * This prevents "metric already registered" errors between test suites that
+   * share the global prom-client registry.
+   */
+  onModuleDestroy(): void {
+    for (const gauge of this.promGauges) {
+      try {
+        gauge.reset(); // clears label values
+      } catch {
+        // best-effort
+      }
+    }
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
