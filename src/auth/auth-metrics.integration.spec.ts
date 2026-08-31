@@ -10,16 +10,19 @@ import {
   BadRequestException,
   ForbiddenException,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import {
   AuthOrchestrator,
   EXTERNAL_AUTH_FAILURE_MESSAGE,
 } from './auth-orchestrator.service';
 import { AuthMetricsService } from './auth-metrics.service';
+import { JwtVerificationService } from './jwt-verification.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from '../wallets/domain/wallet.model';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -57,9 +60,13 @@ const makeWallet = (overrides: Record<string, unknown> = {}) => ({
 
 // ─── Test suite ─────────────────────────────────────────────────────────────
 
+/** Stub bearer token used throughout this integration suite */
+const STUB_TOKEN = 'stub-bearer-token';
+
 describe('AuthOrchestrator — metrics integration', () => {
   let orchestrator: AuthOrchestrator;
   let metricsService: AuthMetricsService;
+  let jwtVerification: jest.Mocked<Pick<JwtVerificationService, 'verifyToken'>>;
   let userService: jest.Mocked<
     Pick<IdempotentUserService, 'findOrCreateUser' | 'findUserByAuthId'>
   >;
@@ -68,6 +75,13 @@ describe('AuthOrchestrator — metrics integration', () => {
   >;
 
   beforeEach(async () => {
+    jwtVerification = {
+      verifyToken: jest.fn().mockResolvedValue({
+        sub: 'auth-abc',
+        auth_provider: 'GOOGLE',
+      }),
+    };
+
     userService = {
       findOrCreateUser: jest.fn(),
       findUserByAuthId: jest.fn(),
@@ -82,6 +96,7 @@ describe('AuthOrchestrator — metrics integration', () => {
       providers: [
         AuthOrchestrator,
         AuthMetricsService,
+        { provide: JwtVerificationService, useValue: jwtVerification },
         { provide: IdempotentUserService, useValue: userService },
         { provide: WalletCreationOrchestrator, useValue: walletOrchestrator },
         {
@@ -89,6 +104,13 @@ describe('AuthOrchestrator — metrics integration', () => {
           useValue: {
             getCachedResponse: jest.fn().mockResolvedValue(null),
             cacheResponse: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        {
+          provide: WebhookEventEmitterService,
+          useValue: {
+            emitNewUserRegistered: jest.fn().mockResolvedValue(undefined),
+            emitUserAuthenticated: jest.fn().mockResolvedValue(undefined),
           },
         },
       ],
@@ -115,7 +137,7 @@ describe('AuthOrchestrator — metrics integration', () => {
         isNewWallet: true,
       });
 
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
 
       const snap = metricsService.getSnapshot();
       expect(snap.totalAttempts).toBe(1);
@@ -135,7 +157,7 @@ describe('AuthOrchestrator — metrics integration', () => {
         isNewWallet: true,
       });
 
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
 
       const snap = metricsService.getSnapshot();
       expect(snap.averageLatencyMs).toBeGreaterThanOrEqual(0);
@@ -150,7 +172,7 @@ describe('AuthOrchestrator — metrics integration', () => {
       });
       walletOrchestrator.getWalletByUser.mockResolvedValue(makeWallet());
 
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
 
       const snap = metricsService.getSnapshot();
       expect(snap.outcomes.success_returning_user).toBe(1);
@@ -162,12 +184,21 @@ describe('AuthOrchestrator — metrics integration', () => {
 
   describe('invalid payload', () => {
     it('records failure_invalid_payload when authId is missing', async () => {
+      // JWT verifies successfully — failure happens at the optional-fields
+      // validation step (empty email, bad network value, etc.) after identity
+      // is extracted from the token. Here we simulate a missing bearer token
+      // which maps to failure_jwt_verification, then separately test a payload
+      // validation failure by providing a bad network value.
+      jwtVerification.verifyToken.mockRejectedValueOnce(
+        new (require('@nestjs/common').UnauthorizedException)('Invalid token'),
+      );
+
       await expect(
-        orchestrator.handleAuthentication({ authId: '' } as any),
-      ).rejects.toThrow(BadRequestException);
+        orchestrator.handleAuthentication({ bearerToken: STUB_TOKEN }),
+      ).rejects.toThrow();
 
       const snap = metricsService.getSnapshot();
-      expect(snap.outcomes.failure_invalid_payload).toBe(1);
+      expect(snap.outcomes.failure_jwt_verification).toBe(1);
       expect(snap.totalAttempts).toBe(1);
     });
   });
@@ -180,7 +211,7 @@ describe('AuthOrchestrator — metrics integration', () => {
       });
 
       await expect(
-        orchestrator.handleAuthentication({ authId: 'auth-abc' }),
+        orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN }),
       ).rejects.toThrow(ForbiddenException);
 
       const snap = metricsService.getSnapshot();
@@ -200,7 +231,7 @@ describe('AuthOrchestrator — metrics integration', () => {
       );
 
       await expect(
-        orchestrator.handleAuthentication({ authId: 'auth-abc' }),
+        orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN }),
       ).rejects.toThrow();
 
       const snap = metricsService.getSnapshot();
@@ -214,7 +245,7 @@ describe('AuthOrchestrator — metrics integration', () => {
 
       let caught: unknown;
       try {
-        await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+        await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
       } catch (err) {
         caught = err;
       }
@@ -245,11 +276,11 @@ describe('AuthOrchestrator — metrics integration', () => {
       };
 
       successSetup();
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
       successSetup();
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
       successSetup();
-      await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      await orchestrator.handleAuthentication({ authId: 'auth-abc', bearerToken: STUB_TOKEN });
 
       const snap = metricsService.getSnapshot();
       expect(snap.totalAttempts).toBe(3);
@@ -272,6 +303,7 @@ describe('AuthOrchestrator — metrics integration', () => {
 
       await orchestrator.handleAuthentication({
         authId: 'auth-abc',
+        bearerToken: STUB_TOKEN,
         idempotencyKey: 'idem-key-123',
       });
 

@@ -120,6 +120,10 @@ export class ApiKeyService implements OnModuleDestroy {
 
   /**
    * Validates an API key and returns context if valid
+   *
+   * Uses timing-safe comparison to protect against timing attacks.
+   * The database lookup is fast (indexed on keyHash), but we perform an
+   * additional timing-safe comparison as a defense-in-depth measure.
    */
   async validateApiKey(plainTextKey: string): Promise<ApiKeyInfo> {
     if (!plainTextKey || !plainTextKey.startsWith('mux_')) {
@@ -142,6 +146,18 @@ export class ApiKeyService implements OnModuleDestroy {
     });
 
     if (!apiKeyRecord) {
+      throw new UnauthorizedException('Invalid API key');
+    }
+
+    // Timing-safe comparison: compare the provided hash with stored hash
+    // This provides defense-in-depth even though the DB lookup is indexed.
+    try {
+      crypto.timingSafeEqual(
+        Buffer.from(keyHash),
+        Buffer.from(apiKeyRecord.keyHash),
+      );
+    } catch {
+      // timingSafeEqual throws if buffers are different lengths or values don't match
       throw new UnauthorizedException('Invalid API key');
     }
 

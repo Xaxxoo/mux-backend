@@ -209,8 +209,41 @@ Authorization: Bearer <jwt_token_from_clerk_or_better_auth>
 - Initial user authentication and onboarding
 - Automatic wallet creation for new users
 - Idempotent user/wallet retrieval for returning users
-- Integration with Web2 auth providers (Clerk, Better Auth, etc.)
+- Integration with Web2 auth providers (Clerk, Better Auth)
 - Safe account suspension/deactivation enforcement
+
+---
+
+## Supported Authentication Providers
+
+Mux Backend supports the following identity providers for user authentication:
+
+### Clerk (`CLERK`)
+
+- Configuration environment variables:
+  - `CLERK_JWT_PUBLIC_KEY`: Public key for JWT verification
+  - `CLERK_JWKS_URL`: JWKS endpoint URL for key rotation
+- JWT claim for provider identification: `auth_provider=CLERK`
+- Supported in production with proper configuration
+
+### Better Auth (`BETTER_AUTH`)
+
+- Configuration environment variables:
+  - `BETTER_AUTH_JWT_PUBLIC_KEY`: Public key for JWT verification
+  - `BETTER_AUTH_JWKS_URL`: JWKS endpoint URL for key rotation
+- JWT claim for provider identification: `auth_provider=BETTER_AUTH`
+- Supported in production with proper configuration
+
+### Adding New Providers
+
+To add support for additional providers:
+
+1. Add a new entry to the `AuthProvider` enum in `src/auth/auth-provider.enum.ts`
+2. Update `AuthProviderConfig` with environment variable names
+3. Implement provider-specific JWT verification in `src/auth/jwt-verification.service.ts`
+4. Update this README with the new provider's configuration
+5. Add integration tests in `test/auth-provider-unification.e2e-spec.ts`
+6. Ensure all acceptance criteria from issue #792 are met
 
 ---
 
@@ -237,6 +270,7 @@ Mux Backend uses a **server-side verification only** trust model for user authen
 ### Production Safety
 
 In production (`NODE_ENV=production`):
+- Only supported identity providers (Clerk, Better Auth) are accepted. Requests with unknown providers are rejected immediately.
 - If JWT verification is unavailable (library not installed, configuration missing), the application fails to start or requests fail with 503 Service Unavailable. There is no silent fallback to trusting client-supplied identity.
 - Identity provider configuration (e.g., `CLERK_JWT_PUBLIC_KEY` or `BETTER_AUTH_JWKS_URL`) is required and validated at startup.
 
