@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import { TransactionsService } from './transactions.service';
+import { FeeBumpService } from './fee-bump.service';
 import { TransactionStatus } from './domain/transaction.model';
 import {
   mapHorizonResultToStatus,
@@ -27,6 +28,7 @@ export class HorizonSubmissionService {
   constructor(
     private readonly configService: ConfigService,
     private readonly transactionsService: TransactionsService,
+    private readonly feeBumpService: FeeBumpService,
   ) {
     this.horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
@@ -36,11 +38,17 @@ export class HorizonSubmissionService {
 
   /**
    * Submits a signed XDR envelope to Horizon and persists the result.
+   *
+   * When the target network is MAINNET, the FEATURE_MAINNET_PAYMENT_SUBMIT
+   * kill-switch must be enabled or submission is rejected with 403.
    */
   async submitTransaction(
     transactionId: string,
     signedXdr: string,
+    network: string = 'TESTNET',
   ): Promise<SubmissionResult> {
+    // Enforce the mainnet kill-switch
+    this.feeBumpService.assertMainnetAllowed(network);
     let horizonResult: HorizonTransactionResult;
 
     try {
