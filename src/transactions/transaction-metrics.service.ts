@@ -9,6 +9,7 @@ export interface TransactionMetricsSnapshot {
   idempotencyHitsTotal: number;
   cacheHitsTotal: number;
   cacheMissesTotal: number;
+  feeBumpCapRejectionsTotal: number;
 }
 
 @Injectable()
@@ -26,6 +27,7 @@ export class TransactionMetricsService {
   private idempotencyHitsTotal = 0;
   private cacheHitsTotal = 0;
   private cacheMissesTotal = 0;
+  private feeBumpCapRejectionsTotal = 0;
 
   incrementTransactionCreated(assetType: string): void {
     this.transactionsCreatedTotal++;
@@ -66,6 +68,18 @@ export class TransactionMetricsService {
     this.logger.debug(`transaction_cache_miss total=${this.cacheMissesTotal}`);
   }
 
+  /**
+   * Records a fee-bump submission that was refused because the computed fee
+   * exceeded the configured `FEE_BUMP_MAX_FEE` cap (issue #800). This guards
+   * against unbounded sponsorship of relayer fees.
+   */
+  incrementFeeBumpCapRejection(): void {
+    this.feeBumpCapRejectionsTotal++;
+    this.logger.warn(
+      `fee_bump_cap_rejection total=${this.feeBumpCapRejectionsTotal}`,
+    );
+  }
+
   getSnapshot(): TransactionMetricsSnapshot {
     return {
       transactionsCreatedTotal: this.transactionsCreatedTotal,
@@ -78,6 +92,7 @@ export class TransactionMetricsService {
       idempotencyHitsTotal: this.idempotencyHitsTotal,
       cacheHitsTotal: this.cacheHitsTotal,
       cacheMissesTotal: this.cacheMissesTotal,
+      feeBumpCapRejectionsTotal: this.feeBumpCapRejectionsTotal,
     };
   }
 }
