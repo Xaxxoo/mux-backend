@@ -820,6 +820,44 @@ describe('WalletsService', () => {
 
       expect(result.hasMore).toBe(false);
     });
+
+    // #696: loadTestMode must be gated to non-production environments
+    describe('loadTestMode gating (#696)', () => {
+      const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+      afterEach(() => {
+        process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+      });
+
+      it('returns synthetic data outside production', async () => {
+        process.env.NODE_ENV = 'development';
+
+        const result = await service.findAll({ loadTestMode: true, limit: 3 });
+
+        expect(result.data).toHaveLength(3);
+        expect(result.total).toBe(1000);
+        expect(mockPrismaWallet.findMany).not.toHaveBeenCalled();
+      });
+
+      it('rejects loadTestMode with 403 in production', async () => {
+        process.env.NODE_ENV = 'production';
+
+        await expect(
+          service.findAll({ loadTestMode: true }),
+        ).rejects.toMatchObject({ status: 403 });
+        expect(mockPrismaWallet.findMany).not.toHaveBeenCalled();
+      });
+
+      it('still serves real data in production when loadTestMode is not set', async () => {
+        process.env.NODE_ENV = 'production';
+        mockPrismaWallet.findMany.mockResolvedValue([walletRow]);
+        mockPrismaWallet.count.mockResolvedValue(1);
+
+        const result = await service.findAll({});
+
+        expect(result.total).toBe(1);
+        expect(mockPrismaWallet.findMany).toHaveBeenCalled();
+      });
+    });
   });
 
   describe('getNetworkPreference', () => {

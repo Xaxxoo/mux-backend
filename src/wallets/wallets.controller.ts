@@ -163,7 +163,10 @@ export class WalletsController {
   @ApiQuery({
     name: 'loadTestMode',
     required: false,
-    description: 'Enable synthetic load test data generation (default false)',
+    description:
+      'Return synthetic wallet data for local performance testing. Ignored ' +
+      'outside non-production environments — a request with loadTestMode=true ' +
+      'is rejected with 403 in production (default false).',
     example: false,
   })
   @Get()

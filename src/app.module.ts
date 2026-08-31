@@ -35,6 +35,7 @@ import { ApiChangelogModule } from './api-changelog/api-changelog.module';
 import { BackupModule } from './backup/backup.module';
 import { SloModule } from './common/slo/slo.module';
 import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
+import { ResponseSanitizerInterceptor } from './common/interceptors/response-sanitizer.interceptor';
 
 @Module({
   imports: [
@@ -88,6 +89,12 @@ import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
     {
       provide: APP_INTERCEPTOR,
       useClass: LatencySloInterceptor,
+    },
+    // #695: Redact sensitive fields (privateKey, encryptedSecret, …) from every
+    // HTTP response, not just the orchestration controller.
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ResponseSanitizerInterceptor,
     },
   ],
 })
