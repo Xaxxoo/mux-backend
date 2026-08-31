@@ -132,6 +132,10 @@ model User {
   /// Relation to user's wallets
   wallets Wallet[]
 
+  /// Developer accounts owned by this user (their projects/API keys are
+  /// cleaned up when the user is deleted)
+  developers Developer[]
+
   /// Relation to user's spending limits
   spendingLimits SpendingLimit[]
 
@@ -279,6 +283,12 @@ model Developer {
   email       String   @unique
   name        String?
   company     String?
+
+  /// Owning user account. Null = platform/onboarding developer not tied to a
+  /// user (e.g. seeded starter accounts). When the owner user is deleted, the
+  /// developer's projects, API keys, and webhook endpoints are cleaned up.
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   
   /// Developer status
   status      String   @default("ACTIVE")
@@ -296,6 +306,7 @@ model Developer {
   @@index([email])
   @@index([status])
   @@index([deletedAt])
+  @@index([userId])
 }
 
 /// Project entity for organizing API keys and usage

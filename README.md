@@ -292,7 +292,15 @@ Users go through the following lifecycle:
 
 4. **Inactive** (similar to suspended): User status can be set to `INACTIVE` for other reasons (e.g., terms violation, dormant account cleanup). Behaves identically to `SUSPENDED` — authentication is rejected.
 
-Users cannot be "deleted" through normal API flows; instead, their status is changed to reflect they should not authenticate. This preserves audit trails and on-chain transaction history.
+5. **Deleted** (operator-initiated): `DELETE /users/:id` soft-deletes the user and, in a single database transaction, cleans up every resource that user owns so nothing keeps working after deletion:
+   - All of the user's **custody wallets** are transitioned to `DISABLED` (a terminal status — their Stellar keys can no longer sign, relay, or be rotated).
+   - Any **developers** owned by the user (via `Developer.userId`) are soft-deleted, along with their **projects**.
+   - Every **API key** under those projects is `REVOKED`, so the keys immediately stop authenticating to the `/v1` API.
+   - **Webhook endpoints** under those projects are disabled.
+
+   The cleanup is atomic and fail-closed: if any step fails, the transaction rolls back and the user stays active — there is no partial cleanup and no environment-dependent skip path. Only resources owned by the deleted user are touched; platform/onboarding developers without a `userId` are unaffected. Soft deletion preserves audit trails and on-chain transaction history.
+
+   Existing developers are linked to their owning user by the `Developer.userId` column (backfilled by email match in the `20260831000000_add_developer_user_owner` migration); new developers can record their owner via the optional `userId` field on `POST /developers`.
 
 ---
 
@@ -394,6 +402,8 @@ This seed also creates an onboarding developer account and a starter project for
 
 A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
+
+> Developer ownership: `Developer.userId` links a developer account to the `User` that owns it. When that user is deleted, the developer, its projects, API keys, and webhook endpoints are cleaned up automatically (see [User Lifecycle](#user-lifecycle)). Seeded onboarding developers have no `userId` and are never touched by user deletion.
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
